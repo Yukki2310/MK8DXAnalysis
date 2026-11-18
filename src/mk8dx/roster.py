@@ -80,6 +80,7 @@ TEAM_PALETTE = ["#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4"
 IMAGE_COST_SCALE = 10.0
 IMAGE_NAME_TIEBREAK = 0.03
 IMAGE_NAME_TIEBREAK_CAP = 5.0
+MAX_ELIMINATED = 2          # 消去法で決めてよい行数の上限（それ以上は新しい選手とみなす）
 MASK_EXEMPLARS = 4          # エントリごとに保持するマスク見本の最大数
 MASK_NEW_DIVERSITY = 0.04   # これ未満の距離の見本は追加しない（重複回避）
 MASK_POISON_LIMIT = 0.3     # これを超えて違うマスクは取り込まない
@@ -563,12 +564,18 @@ class Roster:
         return slots
 
     def resolve(self, observations: list[Observation], *,
-                assume_closed: bool = False) -> Resolution:
+                assume_closed: bool = False,
+                eliminate_among: set[int] | None = None) -> Resolution:
         """観測12行を選手名簿へ一括割り当てする。
 
         assume_closed=True のときは「参加者は選手名簿全員」という
         前提で、未割り当ての行と空き枠を埋め合わせる（低信頼として
         記録し、学習には使わない）。事前登録済み選手名簿での運用向け。
+
+        eliminate_among を渡すと、その選手の中だけを消去法の候補にする（未割り当ての
+        行が MAX_ELIMINATED 行以内のときだけ）。前のレースに出ていた選手が1〜2人
+        見つからないときに、その人だと決めるために使う。例えば配信画面の下に出る
+        「レースを自動終了しました」の表示が12位の名前に重なって読めない場合。
         """
         n = len(observations)
         slots = self._slots()
@@ -618,10 +625,14 @@ class Roster:
                 entry_ids[r] = slots[c].id
                 costs[r] = matrix[r][c]
                 used_slots.add(c)
-        if assume_closed:
+        if assume_closed or eliminate_among is not None:
             unresolved = [r for r in range(n) if entry_ids[r] is None]
             free = [c for c in range(len(slots)) if c not in used_slots]
-            if unresolved and free:
+            if eliminate_among is not None:
+                free = [c for c in free if slots[c].id in eliminate_among]
+                if len(unresolved) > MAX_ELIMINATED:
+                    unresolved = []   # 多すぎるときは推測しない（新しい選手が来た可能性）
+            if unresolved and free and len(unresolved) <= len(free):
                 sub = [[matrix[r][c] for c in free] for r in unresolved]
                 for r, sc in zip(unresolved, hungarian(sub)):
                     c = free[sc]
@@ -812,9 +823,11 @@ class Roster:
         return roster
 
     def resolve_race(self, observations: list[Observation], race_index: int, *,
-                     assume_closed: bool = False) -> Resolution:
+                     assume_closed: bool = False,
+                     eliminate_among: set[int] | None = None) -> Resolution:
         """照合して学習までを一括で行う通常経路。"""
-        resolution = self.resolve(observations, assume_closed=assume_closed)
+        resolution = self.resolve(observations, assume_closed=assume_closed,
+                                  eliminate_among=eliminate_among)
         self.learn(observations, resolution, race_index)
         return resolution
 

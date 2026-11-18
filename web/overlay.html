@@ -5,93 +5,99 @@
 <title>順位表オーバーレイ</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  /* OBS のブラウザソース用。背景は完全に透明。
-     URL の ?pos=（tl / tr / bl / br）と ?size=（s / m / l）で位置と大きさを変えられる。 */
-  :root {
-    --row-h: 62px;
-    --gap: 8px;
-    --panel: rgba(12, 15, 26, 0.80);
-    --text: #ffffff;
-    --accent: #ffd94d;
-  }
+  /* OBS のブラウザソース用（1920×1080、背景は透明）。
+     普段は小さな順位表を表示し、ゲームのリザルト画面が出ている間だけ、
+     ゲームの順位表と重ならない側に大きな順位表を展開する。
+     URL: ?pos=tr|tl|br|bl（小さい表の位置）  ?big=left|right（大きい表の側）  ?size=s|m|l */
+  :root { --panel: rgba(12, 15, 26, .82); --text: #fff; --accent: #ffd94d; }
   html, body {
-    margin: 0; padding: 0; background: transparent; overflow: hidden;
+    margin: 0; height: 100%; overflow: hidden; background: transparent; color: var(--text);
     font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
-    color: var(--text);
   }
-  #board {
-    position: fixed; width: 420px; margin: 28px;
-    transform-origin: top right;
-  }
-  body[data-pos="tl"] #board { top: 0; left: 0; transform-origin: top left; }
-  body[data-pos="tr"] #board { top: 0; right: 0; transform-origin: top right; }
-  body[data-pos="bl"] #board { bottom: 0; left: 0; transform-origin: bottom left; }
-  body[data-pos="br"] #board { bottom: 0; right: 0; transform-origin: bottom right; }
-
-  #head {
-    display: flex; align-items: baseline; justify-content: space-between;
-    padding: 0 6px 10px;
-    text-shadow: 0 2px 6px rgba(0, 0, 0, .9);
-  }
-  #race { font-size: 26px; font-weight: 800; letter-spacing: .04em; }
-  #race small { font-size: 16px; font-weight: 600; opacity: .85; margin-left: 4px; }
-  #sub { font-size: 14px; opacity: .85; }
-
-  #rows { position: relative; transition: height .5s ease; }
-  .row {
-    position: absolute; left: 0; right: 0; height: var(--row-h);
-    display: flex; align-items: center; gap: 12px; box-sizing: border-box;
-    padding: 0 14px 0 0; overflow: hidden;
-    background: var(--panel); border-radius: 10px;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
-    transition: transform .6s cubic-bezier(.3, .8, .3, 1), opacity .4s ease;
-  }
-  .row .bar { width: 10px; align-self: stretch; flex: none; }
-  .row .rank { width: 30px; text-align: center; font-size: 26px; font-weight: 800; flex: none; }
-  .row .name {
-    flex: 1; min-width: 0; font-size: 24px; font-weight: 700;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .row .gain {
-    font-size: 18px; font-weight: 800; color: var(--accent);
-    opacity: 0; transition: opacity .6s ease; min-width: 48px; text-align: right;
-  }
-  .row .gain.show { opacity: 1; }
-  .row .total { font-size: 32px; font-weight: 800; min-width: 62px; text-align: right;
-                font-variant-numeric: tabular-nums; }
-  .row .diff { font-size: 14px; opacity: .75; min-width: 44px; text-align: right;
-               font-variant-numeric: tabular-nums; }
-  .row.first { background: linear-gradient(90deg, rgba(60, 48, 8, .88), rgba(12, 15, 26, .80)); }
-  .row.first .rank { color: var(--accent); }
+  .rows { position: relative; }
+  .row { position: absolute; left: 0; right: 0; display: flex; align-items: center; box-sizing: border-box;
+         background: var(--panel); border-radius: 10px; overflow: hidden;
+         box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+         transition: transform .6s cubic-bezier(.3, .8, .3, 1), opacity .4s ease; }
   .row.enter { opacity: 0; }
+  .row .bar { align-self: stretch; flex: none; }
+  .row .name { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .total { font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
+  .row .rank { font-weight: 800; text-align: center; flex: none; }
+  .row.first { background: linear-gradient(90deg, rgba(64, 50, 6, .92), rgba(12, 15, 26, .82)); }
+  .row.first .rank { color: var(--accent); }
+
+  /* ---- 小さい順位表 ---- */
+  #mini { position: fixed; width: 250px; margin: 22px; transition: opacity .45s ease, transform .55s ease;
+          transform-origin: top right; }
+  body[data-pos="tl"] #mini { top: 0; left: 0; transform-origin: top left; }
+  body[data-pos="tr"] #mini { top: 0; right: 0; }
+  body[data-pos="bl"] #mini { bottom: 0; left: 0; transform-origin: bottom left; }
+  body[data-pos="br"] #mini { bottom: 0; right: 0; transform-origin: bottom right; }
+  #mini .head { font-size: 15px; font-weight: 800; letter-spacing: .06em; padding: 0 4px 6px;
+                text-shadow: 0 2px 5px rgba(0, 0, 0, .9); opacity: .9; }
+  #mini .row { height: 34px; border-radius: 7px; }
+  #mini .bar { width: 6px; }
+  #mini .rank { width: 24px; font-size: 16px; }
+  #mini .name { font-size: 16px; }
+  #mini .total { font-size: 20px; padding-right: 10px; min-width: 40px; }
+  body.expanded #mini { opacity: 0; transform: translateY(-10px) scale(.96); }
+
+  /* ---- 大きい順位表（リザルト画面の間だけ） ---- */
+  #bigWrap { position: fixed; top: 50%; width: 780px; margin: 0 36px; transform: translateY(-50%); pointer-events: none; }
+  body[data-big="left"] #bigWrap { left: 0; }
+  body[data-big="right"] #bigWrap { right: 0; }
+  #big { transform: translateX(-115%) scale(.92); opacity: 0;
+         transition: transform .75s cubic-bezier(.2, .9, .25, 1.05), opacity .5s ease; }
+  body[data-big="right"] #big { transform: translateX(115%) scale(.92); }
+  body.expanded #big { transform: none; opacity: 1; }
+  #big .head { display: flex; align-items: baseline; gap: 14px; padding: 0 8px 14px;
+               text-shadow: 0 3px 10px rgba(0, 0, 0, .9); }
+  #big .title { font-size: 54px; font-weight: 900; letter-spacing: .05em; line-height: 1; }
+  #big .sub { font-size: 26px; font-weight: 700; opacity: .85; }
+  #big .row { height: 104px; border-radius: 14px; }
+  #big .bar { width: 14px; }
+  #big .rank { width: 70px; font-size: 56px; }
+  #big .name { font-size: 44px; }
+  #big .gain { font-size: 36px; font-weight: 900; color: var(--accent); margin-right: 18px;
+               opacity: 0; transform: translateY(8px); transition: opacity .5s ease, transform .5s ease; }
+  #big .gain.show { opacity: 1; transform: none; }
+  #big .total { font-size: 66px; min-width: 120px; padding-right: 22px; }
+  #big .diff { font-size: 22px; opacity: .7; min-width: 60px; text-align: right; padding-right: 22px;
+               font-variant-numeric: tabular-nums; }
+  /* 展開のたびに、行が順に入ってくる */
+  body.expanded #big .row > :not(.gain) { animation: rowIn .6s cubic-bezier(.2, .9, .25, 1) both; animation-delay: calc(var(--i, 0) * 70ms + 250ms); }
+  @keyframes rowIn { from { opacity: 0; transform: translateX(-36px); } to { opacity: 1; transform: none; } }
 </style>
 </head>
-<body data-pos="tr">
-<div id="board">
-  <div id="head">
-    <div id="race">RACE <span id="raceNow">-</span><small>/ <span id="raceMax">12</span></small></div>
-    <div id="sub"></div>
+<body data-pos="tr" data-big="left">
+<div id="mini">
+  <div class="head">RACE <span id="miniNow">-</span> / <span id="miniMax">12</span></div>
+  <div class="rows" id="miniRows"></div>
+</div>
+<div id="bigWrap">
+  <div id="big">
+    <div class="head"><span class="title">RACE <span id="bigNow">-</span></span><span class="sub">/ <span id="bigMax">12</span>　RESULT</span></div>
+    <div class="rows" id="bigRows"></div>
   </div>
-  <div id="rows"></div>
 </div>
 
 <script>
   'use strict';
   const params = new URLSearchParams(location.search);
-  const pos = ['tl', 'tr', 'bl', 'br'].includes(params.get('pos')) ? params.get('pos') : 'tr';
+  const pick = (key, allowed, fallback) => (allowed.includes(params.get(key)) ? params.get(key) : fallback);
+  const pos = pick('pos', ['tl', 'tr', 'bl', 'br'], 'tr');
+  const bigSide = pick('big', ['left', 'right'], 'left');
   const scale = { s: 0.8, m: 1, l: 1.25 }[params.get('size')] || 1;
   document.body.dataset.pos = pos;
-  document.getElementById('board').style.transform = `scale(${scale})`;
+  document.body.dataset.big = bigSide;
+  document.getElementById('mini').style.transform = `scale(${scale})`;
+  document.getElementById('big').parentElement.style.zoom = scale;
 
-  const ROW_H = 62, GAP = 8;
-  const rowsEl = document.getElementById('rows');
-  const nodes = new Map();          // チーム名 -> 行の要素
-  const shown = new Map();          // チーム名 -> 画面に表示中の合計点
-  const gainTimers = new Map();
-  let initialized = false;          // 最初の描画では加点表示やカウントアップをしない
+  const MINI = { h: 34, gap: 6 }, BIG = { h: 104, gap: 12 };
 
   function animateNumber(node, from, to) {
-    const start = performance.now(), dur = 700;
+    const start = performance.now(), dur = 900;
     function tick(now) {
       const t = Math.min(1, (now - start) / dur);
       node.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - t, 3)));
@@ -100,60 +106,81 @@
     requestAnimationFrame(tick);
   }
 
-  function makeRow() {
-    const row = document.createElement('div');
-    row.className = 'row enter';
-    row.innerHTML = '<div class="bar"></div><div class="rank"></div><div class="name"></div>' +
-      '<div class="gain"></div><div class="total">0</div><div class="diff"></div>';
-    return row;
+  // 同じ描画ロジックを小・大の両方の順位表で使う
+  class Board {
+    constructor(el, dims, big) {
+      this.el = el; this.d = dims; this.big = big;
+      this.nodes = new Map(); this.shown = new Map(); this.timers = new Map();
+    }
+    makeRow() {
+      const row = document.createElement('div');
+      row.className = 'row enter';
+      row.innerHTML = '<div class="bar"></div><div class="rank"></div><div class="name"></div>' +
+        (this.big ? '<div class="gain"></div>' : '') + '<div class="total">0</div>' +
+        (this.big ? '<div class="diff"></div>' : '');
+      return row;
+    }
+    render(teams, initialized) {
+      const seen = new Set();
+      teams.forEach((t, i) => {
+        seen.add(t.tag);
+        let row = this.nodes.get(t.tag);
+        const y = i * (this.d.h + this.d.gap);
+        if (!row) {
+          row = this.makeRow();
+          this.nodes.set(t.tag, row);
+          this.el.appendChild(row);
+          row.style.transform = `translateY(${y}px)`;
+          requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove('enter')));
+        }
+        row.style.height = this.d.h + 'px';
+        row.style.setProperty('--i', i);
+        row.classList.toggle('first', t.rank === 1);
+        row.querySelector('.bar').style.background = t.color || '#888';
+        row.querySelector('.rank').textContent = t.rank;
+        row.querySelector('.name').textContent = t.tag;
+        row.style.transform = `translateY(${y}px)`;
+        if (this.big) row.querySelector('.diff').textContent = t.diff_from_top === 0 ? '' : t.diff_from_top;
+
+        const totalEl = row.querySelector('.total');
+        const prev = this.shown.has(t.tag) ? this.shown.get(t.tag) : 0;
+        if (prev !== t.total) {
+          if (initialized) animateNumber(totalEl, prev, t.total); else totalEl.textContent = t.total;
+          if (this.big && initialized) {
+            const gain = row.querySelector('.gain');
+            gain.textContent = '+' + (t.total - prev);
+            gain.classList.add('show');
+            clearTimeout(this.timers.get(t.tag));
+            this.timers.set(t.tag, setTimeout(() => gain.classList.remove('show'), 9000));
+          }
+          this.shown.set(t.tag, t.total);
+        }
+      });
+      for (const [tag, row] of [...this.nodes]) {
+        if (!seen.has(tag)) { row.remove(); this.nodes.delete(tag); this.shown.delete(tag); }
+      }
+      this.el.style.height = Math.max(0, teams.length * (this.d.h + this.d.gap) - this.d.gap) + 'px';
+    }
   }
+
+  const mini = new Board(document.getElementById('miniRows'), MINI, false);
+  const big = new Board(document.getElementById('bigRows'), BIG, true);
+  let initialized = false;
 
   function render(state) {
     const m = state.match;
     const finished = m && m.phase === 'FINISHED';
-    document.getElementById('raceNow').textContent = m ? (finished ? m.total_races : m.next_race) : '-';
-    document.getElementById('raceMax').textContent = m ? m.total_races : 12;
-    document.getElementById('sub').textContent = finished ? '最終結果' : '';
-
+    const now = m ? (finished ? m.total_races : m.next_race) : '-';
+    const max = m ? m.total_races : 12;
+    for (const id of ['miniNow', 'bigNow']) document.getElementById(id).textContent = now;
+    for (const id of ['miniMax', 'bigMax']) document.getElementById(id).textContent = max;
     const teams = state.standings || [];
-    const seen = new Set();
-    teams.forEach((t, i) => {
-      seen.add(t.tag);
-      let row = nodes.get(t.tag);
-      if (!row) {
-        row = makeRow();
-        nodes.set(t.tag, row);
-        rowsEl.appendChild(row);
-        row.style.transform = `translateY(${i * (ROW_H + GAP)}px)`;
-        requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove('enter')));
-      }
-      row.classList.toggle('first', t.rank === 1);
-      row.querySelector('.bar').style.background = t.color || '#888';
-      row.querySelector('.rank').textContent = t.rank;
-      row.querySelector('.name').textContent = t.tag;
-      row.querySelector('.diff').textContent = t.diff_from_top === 0 ? '' : t.diff_from_top;
-      row.style.transform = `translateY(${i * (ROW_H + GAP)}px)`;
-
-      const totalEl = row.querySelector('.total');
-      const prev = shown.has(t.tag) ? shown.get(t.tag) : 0;
-      if (prev !== t.total) {
-        if (initialized) animateNumber(totalEl, prev, t.total);
-        else totalEl.textContent = t.total;
-        if (initialized) {
-          const gain = row.querySelector('.gain');
-          gain.textContent = '+' + (t.total - prev);
-          gain.classList.add('show');
-          clearTimeout(gainTimers.get(t.tag));
-          gainTimers.set(t.tag, setTimeout(() => gain.classList.remove('show'), 8000));
-        }
-        shown.set(t.tag, t.total);
-      }
-    });
-    for (const [tag, row] of [...nodes]) {
-      if (!seen.has(tag)) { row.remove(); nodes.delete(tag); shown.delete(tag); }
-    }
+    mini.render(teams, initialized);
+    big.render(teams, initialized);
     initialized = true;
-    rowsEl.style.height = Math.max(0, teams.length * (ROW_H + GAP) - GAP) + 'px';
+    // リザルト画面が出ている間だけ大きい表を出す（チームがまだ無いときは出さない）
+    const visible = !!(state.live && state.live.result_visible) && teams.length > 0;
+    document.body.classList.toggle('expanded', visible);
   }
 
   function connect() {

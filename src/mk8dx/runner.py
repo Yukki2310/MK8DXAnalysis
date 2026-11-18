@@ -49,6 +49,8 @@ from .state import MatchState, Phase
 # リザルト画面らしさがこの回数（検知周期0.4秒×4 ≒ 1.6秒）連続で無くなったら、
 # 集計後の待機を解除して次のレースを待つ
 GONE_TICKS_TO_RESET = 4
+# リザルト画面が見えなくなってから「表示中」を解除するまでの回数
+VISIBLE_GONE_TICKS = 3
 
 
 def save_outcome(
@@ -122,6 +124,8 @@ class LiveRunner:
     result_seen_wall: float | None = None     # 最後にリザルト画面らしさを検知した時刻(time.time)
     last_result_wall: float | None = None     # 最後にレースを集計した時刻
     last_race_result_id: int | None = None
+    # ゲームのリザルト画面が出ている間 True（オーバーレイを大きく展開する合図）
+    result_visible: bool = False
     _computed_totals: dict[str, int] = field(default_factory=dict)
     _totals_by_id: dict[int, int] = field(default_factory=dict)
     _last_completed_race: int | None = None
@@ -172,6 +176,17 @@ class LiveRunner:
         self.match.tick(
             screen_gone=self._gone_ticks >= GONE_TICKS_TO_RESET, now=now
         )
+        # リザルト画面の表示中かどうか。検証を通って検出状態に入ったあと、画面が
+        # 少しの間見えなくなるまでを「表示中」とする（途切れで点滅しないよう余裕を持たせる）
+        if like and self.match.phase is not Phase.WAITING_RACE:
+            visible = True
+        elif self._gone_ticks >= VISIBLE_GONE_TICKS:
+            visible = False
+        else:
+            visible = self.result_visible
+        if visible != self.result_visible:
+            self.result_visible = visible
+            self._emit("visible", {})
         return self.match.phase.value
 
     def _feed(self, frame: np.ndarray) -> str:

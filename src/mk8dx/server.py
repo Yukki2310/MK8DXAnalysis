@@ -142,6 +142,7 @@ def _build_state() -> dict:
         pending = _runner.pending_payload()
         last_result = _runner.last_result_payload()
         now = time.time()
+        live["result_visible"] = _runner.result_visible
         live["frames"] = _runner.frames_seen
         live["frame_ago"] = (
             now - _runner.last_frame_wall if _runner.last_frame_wall else None)
@@ -332,7 +333,8 @@ async def delete_player(entry_id: int):
 # -- 集計（ライブ） ----------------------------------------------------
 def _on_runner_event(loop: asyncio.AbstractEventLoop):
     def callback(kind: str, payload: dict) -> None:
-        _persist_roster()  # レース確定のたびに名簿の学習結果を保存する
+        if kind != "visible":
+            _persist_roster()  # レース確定のたびに名簿の学習結果を保存する
         asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
 
     return callback
@@ -375,11 +377,10 @@ async def live_start(body: dict):
             namer = NameReader()
             _live_status["name_ocr"] = namer.engine_name
             roi = load_roi_config(str(ROI_PATH))
-            # 確定した選手がいれば「全員そろっている」前提で消去法も使い、
-            # いなければ名簿を自動構築する
-            has_confirmed = any(e.confirmed for e in _roster.entries)
+            # 前のレースに出ていた選手が1〜2人見つからないときは、その人だと決める
+            # （配信画面の「レースを自動終了しました」表示が12位の名前に重なる場合など）
             processor = RaceProcessor(
-                _roster, match.format, assume_closed=has_confirmed,
+                _roster, match.format, auto_eliminate=True,
                 namer=namer if namer.available else None,
             )
             runner = LiveRunner(

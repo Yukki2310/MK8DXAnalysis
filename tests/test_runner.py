@@ -32,10 +32,13 @@ class Script:
         self.names = names
 
 
-def make_runner(tmp_path, script: Script) -> LiveRunner:
+def make_runner(tmp_path, script: Script, *, bad_teams: bool = False) -> LiveRunner:
     roster = Roster()
-    for name in ORDER:
-        roster.seed(name)
+    for i, name in enumerate(ORDER):
+        entry = roster.seed(name)
+        if bad_teams:
+            # 人数が合わないチーム分け（3人・1人・8人）にして、確認が必要な状態にする
+            roster.set_team(entry.id, (["A"] * 3 + ["B"] + ["C"] * 8)[i])
     conn = db.connect(tmp_path / "test.db")
     session_id = db.create_session(conn, "2v2", 12)
     match = MatchState("2v2", 12, cooldown_sec=5.0)
@@ -87,11 +90,8 @@ def test_happy_path_with_cross_check(tmp_path):
 
 
 def test_review_flow_approve(tmp_path):
-    noisy = list(ORDER)
-    noisy[9] = "今ねえあまあ!"
-    noisy[11] = "-"
-    script = Script(noisy)
-    runner = make_runner(tmp_path, script)
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script, bad_teams=True)
     script.like = True
     runner.step(FRAME, now=0.4)
     assert runner.step(FRAME, now=0.8) == "AWAITING_REVIEW"
@@ -100,16 +100,12 @@ def test_review_flow_approve(tmp_path):
     assert db.standings(runner.conn, runner.session_id) == []
     assert runner.approve_pending(now=1.0)
     assert runner.match.phase is Phase.COOLDOWN
-    standings = db.standings(runner.conn, runner.session_id)
-    assert sum(t["total"] for t in standings) == 82
+    assert len(db.valid_rows(runner.conn, runner.session_id)) == 12
 
 
 def test_review_flow_discard(tmp_path):
-    noisy = list(ORDER)
-    noisy[9] = "今ねえあまあ!"
-    noisy[11] = "-"
-    script = Script(noisy)
-    runner = make_runner(tmp_path, script)
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script, bad_teams=True)
     script.like = True
     runner.step(FRAME, now=0.4)
     runner.step(FRAME, now=0.8)
@@ -149,18 +145,15 @@ def test_undo_last_race(tmp_path):
 
 
 def test_pending_payload_reports_what_to_fix(tmp_path):
-    noisy = list(ORDER)
-    noisy[9] = "今ねえあまあ!"
-    noisy[11] = "-"
-    script = Script(noisy)
-    runner = make_runner(tmp_path, script)
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script, bad_teams=True)
     script.like = True
     runner.step(FRAME, now=0.4)
     runner.step(FRAME, now=0.8)
     payload = runner.pending_payload()
     assert payload is not None
     assert all("entry_id" in e for e in payload["entries"])
-    assert payload["can_approve"] == (payload["todo"] == [])
+    assert payload["todo"] and not payload["can_approve"]
 
 
 def test_shared_connection_can_approve_from_another_thread(tmp_path):
@@ -196,3 +189,20 @@ def _try(conn):
         return False
     except Exception:
         return True
+
+
+def test_result_visible_follows_the_result_screen(tmp_path):
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script)
+    events = []
+    runner.on_event = lambda kind, payload: events.append(kind)
+    assert not runner.result_visible
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    assert runner.result_visible and "visible" in events
+    for k in range(1, 3):                      # 1〜2回途切れても表示中のまま
+        script.like = False
+        runner.step(FRAME, now=0.8 + 0.4 * k)
+    assert runner.result_visible
+    runner.step(FRAME, now=3.0)                # 続けて見えなくなったら解除
+    assert not runner.result_visible

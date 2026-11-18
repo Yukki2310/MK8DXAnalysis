@@ -51,15 +51,33 @@ def test_clean_race_confirmed():
     assert sum(points.values()) == 82
 
 
-def test_noisy_race_goes_to_review_with_correct_teams():
+def test_unreadable_rows_are_decided_by_elimination_without_review():
     proc = RaceProcessor(_seeded_roster(), "2v2", assume_closed=True)
     outcome = proc.process_single(_obs(R3_READS), race_index=3)
-    # 化け読み2行が埋め合わせになるため自動確定はしない
-    assert not outcome.confirmed
-    assert any("消去法" in p for p in outcome.problems)
-    # ただし暫定のチーム集計は正しい
+    # 化け読みの行は名簿の空きから決める。確認は求めず、お知らせだけにする
+    assert outcome.confirmed
+    assert any("前のレースの選手" in w for w in outcome.warnings)
     points = {t["normalized_tag"]: t["points"] for t in outcome.teams}
     assert points == EXPECTED_R3_POINTS
+
+
+def test_auto_elimination_only_among_previous_race_players():
+    """前のレースの選手が1人見つからないときだけ、その人だと決める。"""
+    roster = _seeded_roster()
+    proc = RaceProcessor(roster, "2v2", auto_eliminate=True)
+    first = proc.process_single(_obs(R3_ORDER), race_index=1)
+    assert first.confirmed
+    garbled = list(R3_ORDER)
+    garbled[11] = "レースを自動終了しました"       # 12位の名前に重なった表示
+    second = proc.process_single(_obs(garbled), race_index=2)
+    assert second.confirmed
+    assert second.entries[11]["resolved_name"] == R3_ORDER[11]
+    assert second.entries[11]["low_confidence"]
+    # 3人以上が読めないときは推測しない（新しい選手が来た可能性）
+    many = list(R3_ORDER)
+    many[9], many[10], many[11] = "ぜぜぜぜぜぜぜ", "ヴヴヴヴヴヴヴ", "ゐゐゐゐゐゐゐ"
+    third = proc.process_single(_obs(many), race_index=3)
+    assert not any(e["low_confidence"] for e in third.entries)
 
 
 def test_stability_and_majority_across_frames():

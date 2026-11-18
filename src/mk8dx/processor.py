@@ -62,6 +62,7 @@ class RaceProcessor:
         fmt: str,
         *,
         assume_closed: bool = False,
+        auto_eliminate: bool = False,
         min_frames: int = 2,
         stable_frames: int = 2,
         namer=None,
@@ -69,6 +70,9 @@ class RaceProcessor:
         self.roster = roster
         self.format = fmt
         self.assume_closed = assume_closed
+        # 前のレースに出ていた選手が1〜2人見つからないとき、その人だと決める（消去法）
+        self.auto_eliminate = auto_eliminate
+        self._last_ids: set[int] | None = None
         self.min_frames = min_frames
         self.stable_frames = stable_frames
         # namer: 名前クロップ群 -> 表示名 の関数、または NameReader（read_many を持つ）。
@@ -121,6 +125,14 @@ class RaceProcessor:
             self._last_signature = signature
         return "ready" if self.ready else "accumulating"
 
+    def _closed(self) -> dict:
+        """resolve に渡す消去法の指定。"""
+        if self.assume_closed:
+            return {"assume_closed": True}
+        if self.auto_eliminate and self._last_ids:
+            return {"eliminate_among": set(self._last_ids)}
+        return {}
+
     @property
     def ready(self) -> bool:
         return (
@@ -154,7 +166,7 @@ class RaceProcessor:
         if self._frames_seen == 0:
             return None
         resolution = self.roster.resolve(
-            self.consensus(), assume_closed=self.assume_closed
+            self.consensus(), **self._closed()
         )
         return tuple(resolution.entry_ids)
 
@@ -168,7 +180,7 @@ class RaceProcessor:
         consensus = self.consensus()
         ids_before = {e.id for e in self.roster.entries}
         resolution = self.roster.resolve_race(
-            consensus, self._race_index, assume_closed=self.assume_closed
+            consensus, self._race_index, **self._closed()
         )
         new_ids = {e.id for e in self.roster.entries} - ids_before
         if new_ids:
@@ -176,9 +188,7 @@ class RaceProcessor:
             # もう一度照合し直すと名前が引ける（登録なし運用の初回
             # レースでも集計できるようにするため）。学習は済んでいる
             # ので、ここでの照合は学習なしの純粋な解決だけを行う。
-            resolution = self.roster.resolve(
-                consensus, assume_closed=self.assume_closed
-            )
+            resolution = self.roster.resolve(consensus, **self._closed())
         # 新規選手を含め、名前が未確定の選手を名付けてから結果を組み立てる
         self._name_entries(resolution)
         outcome = self._build_outcome(consensus, resolution)
@@ -189,6 +199,8 @@ class RaceProcessor:
                 f"初めて見る選手が{len(new_ids)}名います。"
                 "名前とチームが合っているか確認してください"
             )
+        # 次のレースで消去法の候補にする（今回出ていた選手）
+        self._last_ids = {i for i in resolution.entry_ids if i is not None}
         return outcome
 
     def _name_entries(self, resolution: Resolution) -> None:
@@ -321,8 +333,10 @@ class RaceProcessor:
             if resolved[i] is None:
                 problems.append(f"{rank}位の選手を特定できませんでした")
             if resolution.low_confidence[i]:
-                problems.append(
-                    f"{rank}位は消去法で選手を決めたため、確認が必要です"
+                # 名前が読めなかった行を、名簿の空き（前のレースの選手）から決めた。
+                # 確認は求めず、お知らせだけ出す
+                warnings.append(
+                    f"{rank}位は名前が読み取れなかったため、前のレースの選手から決めました"
                 )
             entries.append({
                 "rank": rank,
