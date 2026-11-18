@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -17,9 +19,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db
+from .capture import VirtualCamera
 from .clustering import assign_teams
+from .ocr import OcrEngine
+from .preprocess import load_roi_config
 from .processor import RaceProcessor
 from .roster import Observation, Roster
+from .runner import LiveRunner, save_outcome
 from .scoring import validate_scores
 from .state import MatchState
 
@@ -41,6 +47,15 @@ _roster = Roster()
 _processor: RaceProcessor | None = None
 _processor_format: str | None = None
 
+# 要確認レース（simulate_race 由来）。ライブ由来のものは runner.pending が正。
+_pending_review: dict | None = None
+
+# ライブランナー（別スレッドで駆動する）
+_runner: LiveRunner | None = None
+_live_thread: threading.Thread | None = None
+_live_stop = threading.Event()
+_live_status: dict = {"running": False, "error": None}
+
 
 def _get_processor(fmt: str) -> RaceProcessor:
     global _processor, _processor_format
@@ -48,6 +63,16 @@ def _get_processor(fmt: str) -> RaceProcessor:
         _processor = RaceProcessor(_roster, fmt, assume_closed=True)
         _processor_format = fmt
     return _processor
+
+
+def _current_pending() -> dict | None:
+    if _runner is not None and _runner.pending is not None:
+        payload = _runner.pending_payload()
+        if payload is not None:
+            return {**payload, "source": "live"}
+    if _pending_review is not None:
+        return {**_pending_review, "source": "simulate"}
+    return None
 
 
 def _db():
@@ -65,6 +90,8 @@ def state_payload() -> dict:
         "type": "STATE_UPDATE",
         "match": _match.snapshot() if _match else None,
         "standings": standings,
+        "pending": _current_pending(),
+        "live": _live_status,
     }
 
 
@@ -102,6 +129,8 @@ class SimulateResult(BaseModel):
 
 @app.post("/api/session")
 async def start_session(body: dict):
+    if _live_status["running"]:
+        return {"error": "ライブ実行中はセッションを開始できません。先にライブを停止してください"}
     reset_match(body.get("format", "2v2"), int(body.get("total_races", 12)))
     await broadcast_state()
     return {"session_id": _session_id}
@@ -198,7 +227,7 @@ async def simulate_race(body: SimulateRace):
     """カメラなし検証用（ロスター照合あり）: 生の名前12名を投入し、
     名寄せ→チーム判定→集計を通す。確定できないレースは
     AWAITING_REVIEW として警告し、結果は is_valid=False で保存する。"""
-    global _match
+    global _match, _pending_review
     if _match is None or _session_id is None:
         reset_match("2v2")
     assert _match is not None
@@ -208,32 +237,18 @@ async def simulate_race(body: SimulateRace):
     outcome = processor.process_single(
         [Observation(name=n) for n in body.names], race_number
     )
-
-    team_id_by_index: dict[int, int] = {}
-    if outcome.assignment is not None:
-        for team in outcome.assignment.teams:
-            team_id = db.get_or_create_team(
-                conn, _session_id, team.tag, team.normalized_tag
-            )
-            for idx in team.members:
-                team_id_by_index[idx] = team_id
-    entries = [
-        {
-            "rank": e["rank"],
-            "player_name": e["resolved_name"] or e["raw_name"],
-            "team_id": team_id_by_index.get(e["rank"] - 1),
-            "score": e["score"],
-            "raw_ocr_text": e["raw_name"],
-        }
-        for e in outcome.entries
-    ]
-    db.save_race_result(
-        conn, _session_id, race_number, entries, is_valid=outcome.confirmed
-    )
+    race_result_id = save_outcome(conn, _session_id, outcome)
     _match.on_result_candidate()
     _match.on_screen_stable()
     _match.on_processing_done(valid=outcome.confirmed)
     if not outcome.confirmed:
+        _pending_review = {
+            "race_result_id": race_result_id,
+            "race_number": race_number,
+            "problems": outcome.problems,
+            "entries": outcome.entries,
+            "teams": outcome.teams,
+        }
         await alert(
             "ロスター照合で要確認のレースがあります",
             {"problems": outcome.problems, "race_number": race_number},
@@ -246,6 +261,110 @@ async def simulate_race(body: SimulateRace):
         "teams": outcome.teams,
         "entries": outcome.entries,
     }
+
+
+@app.post("/api/review/approve")
+async def review_approve():
+    """要確認レースを承認する（DBを有効化し、状態機械を進める）。"""
+    global _pending_review
+    if _runner is not None and _runner.pending is not None:
+        _runner.approve_pending()
+    elif _pending_review is not None and _match is not None:
+        db.approve_race_result(_db(), _pending_review["race_result_id"])
+        _match.approve_pending()
+        _pending_review = None
+    else:
+        return {"ok": False, "error": "要確認のレースがありません"}
+    await broadcast_state()
+    return {"ok": True}
+
+
+@app.post("/api/review/discard")
+async def review_discard():
+    """要確認レースを破棄する（DBから削除し、再検出に戻る）。"""
+    global _pending_review
+    if _runner is not None and _runner.pending is not None:
+        _runner.discard_pending()
+    elif _pending_review is not None and _match is not None:
+        db.delete_race_result(_db(), _pending_review["race_result_id"])
+        _match.discard_pending()
+        _pending_review = None
+    else:
+        return {"ok": False, "error": "要確認のレースがありません"}
+    await broadcast_state()
+    return {"ok": True}
+
+
+def _on_runner_event(loop: asyncio.AbstractEventLoop):
+    def callback(kind: str, payload: dict) -> None:
+        if kind == "alert":
+            asyncio.run_coroutine_threadsafe(
+                alert(payload.get("message", ""), payload), loop
+            )
+        asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
+
+    return callback
+
+
+@app.post("/api/live/start")
+async def live_start(body: dict):
+    """ライブランナーを別スレッドで開始する（OBS仮想カメラ入力）。"""
+    global _runner, _live_thread
+    if _live_status["running"]:
+        return {"ok": False, "error": "すでに実行中です"}
+    if _match is None or _session_id is None:
+        reset_match(body.get("format", "2v2"), int(body.get("total_races", 12)))
+    assert _match is not None and _session_id is not None
+    device_index = int(body.get("device_index", 0))
+    loop = asyncio.get_running_loop()
+    _live_stop.clear()
+    _live_status.update({"running": True, "error": None})
+
+    def run() -> None:
+        global _runner
+        conn = db.connect(DB_PATH)
+        try:
+            ocr = OcrEngine()
+            roi = load_roi_config(str(BASE_DIR / "config" / "roi_1080p.json"))
+            runner = LiveRunner(
+                roi=roi,
+                ocr=ocr,
+                processor=_get_processor(_match.format),  # type: ignore[union-attr]
+                match=_match,  # type: ignore[arg-type]
+                conn=conn,
+                session_id=_session_id,  # type: ignore[arg-type]
+                on_event=_on_runner_event(loop),
+            )
+            _runner = runner
+            cam = VirtualCamera(device_index)
+            cam.open()
+            try:
+                for frame in cam.frames_at_interval(0.4):
+                    if _live_stop.is_set():
+                        break
+                    runner.step(frame, time.monotonic())
+            finally:
+                cam.release()
+        except Exception as exc:  # カメラが開けない等はステータスに残す
+            _live_status["error"] = str(exc)
+        finally:
+            _live_status["running"] = False
+            asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
+
+    _live_thread = threading.Thread(target=run, daemon=True)
+    _live_thread.start()
+    return {"ok": True}
+
+
+@app.post("/api/live/stop")
+async def live_stop():
+    _live_stop.set()
+    return {"ok": True}
+
+
+@app.get("/api/live/status")
+async def live_status():
+    return _live_status
 
 
 @app.get("/overlay")

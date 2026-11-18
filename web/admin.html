@@ -31,6 +31,14 @@
 </section>
 
 <section>
+  <h2>ライブ（OBS仮想カメラ）</h2>
+  デバイス番号: <input id="liveDevice" type="number" value="0" min="0" style="width:60px">
+  <button id="liveStart">開始</button>
+  <button id="liveStop">停止</button>
+  <span id="liveState">停止中</span>
+</section>
+
+<section>
   <h2>ロスター（選手の事前登録）</h2>
   <p>対戦する12名を登録しておくと、OCRの読みを名寄せして集計します（推奨の運用）。同名の選手は2回登録してください。国旗はレース中の自動学習でひも付きます。</p>
   <input id="rosterName" placeholder="選手名（タグ込み）" size="32">
@@ -42,6 +50,15 @@
 <section>
   <h2>警告</h2>
   <div id="alerts">なし</div>
+</section>
+
+<section id="pendingSection" style="display:none">
+  <h2>要確認レース（暫定結果）</h2>
+  <div id="pendingInfo"></div>
+  <table><thead><tr><th>順位</th><th>OCR読み</th><th>名寄せ結果</th><th>点</th><th></th></tr></thead>
+  <tbody id="pendingBody"></tbody></table>
+  <button id="approve">この内容で承認する</button>
+  <button id="discard">破棄する</button>
 </section>
 
 <section>
@@ -75,6 +92,23 @@
       const m = msg.match;
       document.getElementById('matchState').textContent =
         m ? ` / 完了レース: ${m.current_race} / ${m.total_races}（状態: ${m.phase}）` : '';
+      document.getElementById('liveState').textContent =
+        msg.live && msg.live.running ? '実行中' : ('停止中' + (msg.live && msg.live.error ? '（エラー: ' + msg.live.error + '）' : ''));
+      const psec = document.getElementById('pendingSection');
+      if (msg.pending) {
+        psec.style.display = '';
+        document.getElementById('pendingInfo').textContent =
+          `レース ${msg.pending.race_number}（${msg.pending.source}）: ` + (msg.pending.problems || []).join(' / ');
+        const pb = document.getElementById('pendingBody');
+        pb.innerHTML = '';
+        for (const e of msg.pending.entries || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${e.rank}</td><td>${e.raw_name}</td><td>${e.resolved_name || '（未照合）'}</td><td>${e.score}</td><td>${e.low_confidence ? '消去法' : ''}</td>`;
+          pb.appendChild(tr);
+        }
+      } else {
+        psec.style.display = 'none';
+      }
       const tb = document.getElementById('standings');
       tb.innerHTML = '';
       for (const t of msg.standings || []) {
@@ -85,6 +119,19 @@
     } else if (msg.type === 'ALERT') {
       alertsEl.textContent = msg.message + '\n' + JSON.stringify(msg.detail, null, 2);
     }
+  };
+  document.getElementById('liveStart').onclick = async () => {
+    await fetch('/api/live/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ device_index: parseInt(document.getElementById('liveDevice').value, 10) || 0 }) });
+  };
+  document.getElementById('liveStop').onclick = async () => {
+    await fetch('/api/live/stop', { method: 'POST' });
+  };
+  document.getElementById('approve').onclick = async () => {
+    await fetch('/api/review/approve', { method: 'POST' });
+  };
+  document.getElementById('discard').onclick = async () => {
+    await fetch('/api/review/discard', { method: 'POST' });
   };
   document.getElementById('reset').onclick = async () => {
     await fetch('/api/session', { method: 'POST', headers: {'Content-Type': 'application/json'},
