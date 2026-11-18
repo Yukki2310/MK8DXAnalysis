@@ -1,4 +1,4 @@
-"""ステップ3検証: ロスター照合をステップ2の実データで検証する。
+"""ステップ3検証: 選手名簿照合をステップ2の実データで検証する。
 
 使い方:
     python tools/step3_check.py
@@ -7,10 +7,10 @@
 保存フレーム（data/frames/<section>/*.png から抽出する国旗署名）を
 入力に、2つの運用モードを検証する。
 
-- モードA（事前登録＋closed）: レース3・4の正規ロスターを seed し、
+- モードA（事前登録＋closed）: レース3・4の正規選手名簿を seed し、
   assume_closed=True で照合する。2v2 クラスタリングの成立と、
   レース4フェーズBの（名前, 累計）一致率を見る。
-- モードB（自動構築）: ロスター空からレース1→3→4の順に流し、
+- モードB（自動構築）: 選手名簿空からレース1→3→4の順に流し、
   仮登録・本登録・名寄せの挙動とクラスタリング成立可否を見る。
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ from mk8dx.roster import Observation, Roster, extract_flag_signature
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# 目視で確定したレース3・4の正規ロスター
+# 目視で確定したレース3・4の正規選手名簿
 CANONICAL_R34 = [
     "xı c.qq", "xı avalon", "FR", "FR Flowx", "racist #1", "racist #2",
     "Xb", "Xb◇ねえあまぁƄ", "RR★", "RR★",
@@ -92,7 +92,7 @@ def show(label: str, roster: Roster, resolution, entries: list[dict]) -> None:
 def main() -> None:
     seg = {s: load_segment(s) for s in ["330", "710", "870", "1070"]}
 
-    print("===== モードA: 事前登録ロスター（closed） =====")
+    print("===== モードA: 事前登録選手名簿（closed） =====")
     roster = Roster()
     # RR★ は同名2名: 710フレームの国旗（5行目=ベルギー、11行目=日本）で seed
     obs710, _ = seg["710"]
@@ -127,7 +127,7 @@ def main() -> None:
             print(f"   (名前,累計) 一致: {ok}/10 + RR★2名 {'一致' if rr_ok else f'不一致 {rr_totals}'}")
 
     print()
-    print("===== モードB: ロスター自動構築（open） =====")
+    print("===== モードB: 選手名簿自動構築（open） =====")
     roster = Roster()
     for section, race, label in [
         ("330", 1, "レース1 フェーズA"),
@@ -139,7 +139,7 @@ def main() -> None:
         res = roster.resolve_race(observations, race)
         show(label, roster, res, entries)
     confirmed = sum(1 for e in roster.entries if e.confirmed)
-    print(f"   ロスター: 全{len(roster.entries)}エントリ（本登録 {confirmed}）")
+    print(f"   選手名簿: 全{len(roster.entries)}エントリ（本登録 {confirmed}）")
 
 
 if __name__ == "__main__":

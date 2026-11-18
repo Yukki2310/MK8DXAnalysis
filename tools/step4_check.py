@@ -5,9 +5,9 @@
 
 - パイプライン橋渡し（extract_observations）がフレームから
   12行分の観測（名前＋国旗署名）を抽出できることを確認する。
-- 事前登録ロスター＋closed の RaceProcessor にレース3・4の観測を
+- 事前登録選手名簿＋closed の RaceProcessor にレース3・4の観測を
   2フレームずつ流し、確定/要確認の振り分けとチーム集計を見る。
-- レース1（ロスター外の選手が多い）を open で流し、未照合として
+- レース1（選手名簿外の選手が多い）を open で流し、未照合として
   要確認に落ちることを確認する。
 """
 from __future__ import annotations
@@ -60,7 +60,7 @@ def main() -> None:
     seg = {s: load_segment(s) for s in ["330", "710", "870"]}
 
     print()
-    print("===== 事前登録ロスター＋closed（2フレーム蓄積） =====")
+    print("===== 事前登録選手名簿＋closed（2フレーム蓄積） =====")
     proc = seeded_processor(assume_closed=True, min_frames=2, stable_frames=2)
     for section, race, label in [("710", 3, "レース3"), ("870", 4, "レース4")]:
         observations, _entries = seg[section]
@@ -70,7 +70,7 @@ def main() -> None:
         show(label, proc.finalize())
 
     print()
-    print("===== レース1を open で（ロスター外が多いケース） =====")
+    print("===== レース1を open で（選手名簿外が多いケース） =====")
     proc = seeded_processor(assume_closed=False)
     observations, _entries = seg["330"]
     outcome = proc.process_single(observations, race_index=1)

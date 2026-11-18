@@ -1,4 +1,4 @@
-"""roster.py（ロスター照合）のテスト。"""
+"""roster.py（選手名簿照合）のテスト。"""
 import itertools
 import random
 
@@ -156,3 +156,124 @@ def test_closed_fill_marks_low_confidence_and_skips_learning():
     )
     charlie = roster.entries[2]
     assert "!!!" not in charlie.variants
+
+
+def test_provisional_flag_gives_no_bonus():
+    # 仮登録の国旗はボーナスの根拠にしない（文字化け名簿が国旗で
+    # 別人の行を奪う事故の対策、ステップ6）
+    from mk8dx.roster import FLAG_BONUS, _flag_adjustment
+
+    roster = Roster()
+    roster.resolve_race([Observation("some player", flag=_flag(0.0))], race_index=1)
+    entry = roster.entries[0]
+    assert not entry.confirmed
+    assert _flag_adjustment(_flag(0.0), entry) == 0.0
+    entry.confirmed = True
+    assert _flag_adjustment(_flag(0.0), entry) == FLAG_BONUS
+
+
+def test_junk_read_creates_no_entry():
+    # 記号だけの読みは選手名簿に残さない
+    roster = Roster()
+    roster.resolve_race([Observation("-"), Observation("!!")], race_index=1)
+    assert roster.entries == []
+    # 名前らしい読みは仮登録される
+    roster.resolve_race([Observation("たろう")], race_index=1)
+    assert len(roster.entries) == 1
+
+
+def test_merge_duplicates_never_coassigned():
+    # 同時出現したことのない酷似エントリは統合される
+    roster = Roster()
+    a = roster._new_provisional(Observation("XI c.qq"))
+    a.races_seen = 2
+    b = roster._new_provisional(Observation("xı c.qq"))
+    b.races_seen = 1
+    roster._merge_duplicates()
+    assert len(roster.entries) == 1
+    merged = roster.entries[0]
+    assert merged.races_seen == 3
+    assert set(merged.variants) == {"XI c.qq", "xı c.qq"}
+
+
+def test_merge_blocked_for_coassigned_pair():
+    # 同じレースに同時出現した組は別人確定なので統合しない
+    roster = Roster()
+    a = roster._new_provisional(Observation("XI c.qq"))
+    b = roster._new_provisional(Observation("xı c.qq"))
+    a.co_seen.add(b.id)
+    b.co_seen.add(a.id)
+    roster._merge_duplicates()
+    assert len(roster.entries) == 2
+
+
+def test_merge_blocked_by_conflicting_flags():
+    # 同名でも国旗が違えば別人（フランス旗と日本旗の FR など）
+    roster = Roster()
+    a = roster._new_provisional(Observation("FR", flag=_flag(0.0)))
+    b = roster._new_provisional(Observation("FR", flag=_flag(1.0)))
+    roster._merge_duplicates()
+    assert len(roster.entries) == 2
+
+
+def test_prune_stale_provisional():
+    # 1回だけ現れて3レース以上現れない仮登録は除去される
+    roster = Roster()
+    roster.resolve_race([Observation("ghost player")], race_index=1)
+    assert len(roster.entries) == 1
+    roster.resolve_race([Observation("other player")], race_index=4)
+    names = [e.canonical_name for e in roster.entries]
+    assert names == ["other player"]
+
+
+def test_roster_serialization_roundtrip():
+    roster = Roster()
+    roster.seed("RR★", flag=_flag(0.0))
+    roster.resolve_race([Observation("たろう", flag=_flag(1.0))], race_index=1)
+    restored = Roster.from_dict(roster.to_dict())
+    assert [e.canonical_name for e in restored.entries] == [
+        e.canonical_name for e in roster.entries
+    ]
+    assert restored.entries[0].pinned_name == "RR★"
+    assert restored.entries[0].confirmed
+    from mk8dx.roster import flag_distance
+
+    assert flag_distance(
+        restored.entries[0].flag_signatures[0], _flag(0.0)
+    ) < 0.01
+    assert restored.entries[1].races_seen == 1
+
+
+def test_short_weak_match_is_surcharged():
+    # 2文字同士の弱い一致（'AA' vs '三日'）は未割り当てコストを超える
+    assert name_cost("AA", "三日") > 4.0
+    # 完全一致と記号欠落レベルの強い一致には加算されない
+    assert name_cost("FR", "FR") == 0.0
+    assert name_cost("RR", "RR★") < 0.5
+
+
+def test_roster_db_store_roundtrip(tmp_path):
+    from mk8dx import db
+
+    conn = db.connect(tmp_path / "t.db")
+    assert db.load_roster_data(conn) is None
+    roster = Roster()
+    roster.seed("RR★")
+    db.save_roster_data(conn, roster.to_dict())
+    data = db.load_roster_data(conn)
+    assert data is not None
+    assert Roster.from_dict(data).entries[0].canonical_name == "RR★"
+
+
+def test_rename_entry_pins_name_and_confirms():
+    roster = Roster()
+    roster.resolve_race([Observation("RP青")], race_index=1)
+    entry = roster.entries[0]
+    assert not entry.confirmed
+    assert roster.rename(entry.id, "RR★")
+    assert entry.canonical_name == "RR★"
+    assert entry.confirmed
+    # 以後の多数決でも固定名が維持される
+    roster.resolve_race([Observation("RR")], race_index=2)
+    assert entry.canonical_name == "RR★"
+    assert not roster.rename(9999, "nobody")

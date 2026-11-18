@@ -22,7 +22,7 @@ R3_READS = [
     "XI c.qq", "FR", "racist #1", "Xb", "RR", "FRFlowx",
     "Aかぜんだかいとしき", "AA", "XIavalon", "今ねえあまあ!", "日日-", "-",
 ]
-# レース1のOCR生読み（ロスター外の選手が多い）
+# レース1のOCR生読み（選手名簿外の選手が多い）
 R1_READS = [
     "xi c.qq", "RR*", "Rev", "ths", "racist #2", "A大ぜんだかいとしき",
     "FR", "メ念れえあまあ", "Xb", "racist #7", "三日", "xavalon",
@@ -98,5 +98,7 @@ def test_open_mode_unresolved_goes_to_review():
     proc = RaceProcessor(_seeded_roster(), "2v2", assume_closed=False)
     outcome = proc.process_single(_obs(R1_READS), race_index=1)
     assert not outcome.confirmed
+    # 名簿にない読みは新規登録され、再照合で名前は引けるようになるが、
+    # チーム割り当てが成立しないため集計はされず要確認に回る
     assert outcome.teams == []
-    assert any("照合できませんでした" in p for p in outcome.problems)
+    assert any("新規の選手" in p for p in outcome.problems)
