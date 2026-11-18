@@ -102,6 +102,14 @@ def test_canonical_name_follows_majority():
     assert entry.canonical_name == "A★ぜんだかいとしき"
 
 
+def test_fragment_read_does_not_steal_short_canonical():
+    # 1文字のゴミ読み '-' は 'RR★' への素の距離が小さいが、
+    # 断片ペナルティで未割り当てコスト（4.0）より高くなる
+    assert name_cost("-", "RR★") > 4.0
+    # 3文字の化け読みは断片扱いにならない
+    assert name_cost("日日-", "RR★") < 4.0
+
+
 def test_ascii_star_treated_as_symbol():
     # en モデルは '★' を '*' と読む。コスト計算では同一視する
     assert name_cost("RR", "RR*") < 0.5
