@@ -31,8 +31,13 @@ if ($LightOnly) { & $py $fetch --no-vlm } else { & $py $fetch }
 
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if (-not $iscc) {
-    $candidate = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-    if (Test-Path $candidate) { $iscc = Get-Item $candidate }
+    foreach ($candidate in @(
+            "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe")) {
+        if (Test-Path $candidate) { $iscc = Get-Item $candidate; break }
+    }
 }
 if ($iscc) {
     & $iscc.Source installer\mk8dx.iss
