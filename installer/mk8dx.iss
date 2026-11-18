@@ -19,7 +19,8 @@ Compression=lzma2/fast
 SolidCompression=no
 LZMAUseSeparateProcess=yes
 DiskSpanning=yes
-DiskSliceSize=2100000000
+; GitHub Releases の1ファイル上限(2GiB)に余裕を持たせる
+DiskSliceSize=2000000000
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
@@ -39,6 +40,8 @@ Name: "small"; Description: "小型の文字認識モデル（GPUメモリが少
 [Files]
 ; 本体（モデルを除く）
 Source: "..\dist\MK8DXAnalysis\*"; DestDir: "{app}"; Excludes: "{#Models}\*"; Flags: recursesubdirs ignoreversion; Components: main
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: main
+Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 ; 文字認識モデル（無圧縮）
 Source: "..\dist\MK8DXAnalysis\{#Models}\ch_PP-OCRv5_rec_mobile.onnx"; DestDir: "{app}\{#Models}"; Flags: ignoreversion nocompression; Components: main
 Source: "..\dist\MK8DXAnalysis\{#Models}\Qwen3-VL-4B-Instruct\*"; DestDir: "{app}\{#Models}\Qwen3-VL-4B-Instruct"; Flags: recursesubdirs ignoreversion nocompression; Components: main
