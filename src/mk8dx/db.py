@@ -43,8 +43,13 @@ CREATE TABLE IF NOT EXISTS player_scores (
 TEAM_COLORS = ["#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4"]
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+def connect(path: str | Path, *, shared: bool = False) -> sqlite3.Connection:
+    """DBへ接続する。shared=True なら複数スレッドから使える接続にする。
+
+    ライブ処理のスレッドと、管理画面の操作（確定・取り消し）を受けるスレッドが
+    同じ接続を使うため。呼び出し側が同時に使わないよう鍵を掛ける前提。
+    """
+    conn = sqlite3.connect(str(path), check_same_thread=not shared)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate(conn)

@@ -44,6 +44,9 @@ _roster = Roster()
 _lock = threading.RLock()
 
 _runner: LiveRunner | None = None
+# ライブランナーが使うDB接続。集計をとめた後も「確定する」「取り消す」を受けるため、
+# 次の集計を始めるまで開いたままにする
+_runner_conn = None
 _live_thread: threading.Thread | None = None
 _live_stop = threading.Event()
 _live_status: dict = {"running": False, "error": None, "name_ocr": None}
@@ -81,10 +84,10 @@ _restore()
 
 
 def _db():
-    """イベントループ（メインスレッド）専用のDB接続。"""
+    """画面表示・操作用のDB接続（どのスレッドから呼ばれても使えるようにしてある）。"""
     global _conn
     if _conn is None:
-        _conn = db.connect(DB_PATH)
+        _conn = db.connect(DB_PATH, shared=True)
     return _conn
 
 
@@ -322,7 +325,7 @@ def _friendly_error(exc: Exception, device_index: int) -> str:
 
 @app.post("/api/live/start")
 async def live_start(body: dict):
-    global _runner, _live_thread
+    global _runner, _live_thread, _runner_conn
     if _live_status["running"]:
         return _error("すでに集計中です")
     with _lock:
@@ -334,10 +337,14 @@ async def live_start(body: dict):
     _live_stop.clear()
     _live_status.update({"running": True, "error": None})
     session_id, match = _session_id, _match
+    with _lock:
+        if _runner_conn is not None:
+            _runner_conn.close()
+        _runner_conn = db.connect(DB_PATH, shared=True)
+    conn = _runner_conn
 
     def run() -> None:
         global _runner
-        conn = db.connect(DB_PATH)
         try:
             namer = NameReader()
             _live_status["name_ocr"] = "rapidocr" if namer.available else "none"
@@ -371,7 +378,6 @@ async def live_start(body: dict):
             _live_status["error"] = _friendly_error(exc, device_index)
         finally:
             _live_status["running"] = False
-            conn.close()
             asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
 
     _live_thread = threading.Thread(target=run, daemon=True)

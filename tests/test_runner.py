@@ -157,3 +157,38 @@ def test_pending_payload_reports_what_to_fix(tmp_path):
     assert payload is not None
     assert all("entry_id" in e for e in payload["entries"])
     assert payload["can_approve"] == (payload["todo"] == [])
+
+
+def test_shared_connection_can_approve_from_another_thread(tmp_path):
+    """ライブ処理のスレッドで保存した結果を、画面操作を受けるスレッドで確定できる。"""
+    import threading
+
+    conn = db.connect(tmp_path / "shared.db", shared=True)
+    session_id = db.create_session(conn, "2v2", 12)
+    result = {}
+
+    def save():
+        result["id"] = db.save_race_result(
+            conn, session_id, 1,
+            [{"rank": 1, "player_name": "p", "team_id": None, "score": 15,
+              "entry_id": 1}], is_valid=False)
+
+    t = threading.Thread(target=save)
+    t.start()
+    t.join()
+    db.approve_race_result(conn, result["id"])   # 別スレッドから（以前は例外になった）
+    assert len(db.valid_rows(conn, session_id)) == 1
+
+    plain = db.connect(tmp_path / "plain.db")      # 既定は従来どおりスレッド専用
+    t = threading.Thread(target=lambda: result.update(err=_try(plain)))
+    t.start()
+    t.join()
+    assert result["err"]
+
+
+def _try(conn):
+    try:
+        conn.execute("SELECT 1")
+        return False
+    except Exception:
+        return True
