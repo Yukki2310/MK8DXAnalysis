@@ -125,6 +125,24 @@ def classify_phase(frame: np.ndarray, roi: dict, ocr: OcrEngine) -> str:
     return classify_plain_phase(totals)
 
 
+def verify_result_candidate(
+    frame: np.ndarray, roi: dict, ocr: OcrEngine
+) -> bool:
+    """候補フレームが本物のリザルト画面か、順位列で検証する。
+
+    レース前のプレイヤー紹介画面なども名前列インクが高く候補に
+    なるため、順位列（1,2,11,12位）の数字OCRで2つ以上一致したら
+    本物とみなす（ステップ2でコース選択画面の棄却に実績のある方法）。
+    """
+    rows = crop_rows(frame, roi)
+    hits = 0
+    for rank in (1, 2, 11, 12):
+        value, _conf = ocr.recognize_digits_en(rows[rank]["rank"])
+        if value is not None and int(value) == rank:
+            hits += 1
+    return hits >= 2
+
+
 def extract_observations(
     frame: np.ndarray, roi: dict, ocr: OcrEngine
 ) -> list[Observation]:

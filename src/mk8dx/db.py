@@ -121,6 +121,33 @@ def save_race_result(
     return race_result_id
 
 
+def approve_race_result(conn: sqlite3.Connection, race_result_id: int) -> None:
+    """要確認（is_valid=0）で保存したレースを承認して有効化する。"""
+    conn.execute(
+        "UPDATE race_results SET is_valid = 1 WHERE id = ?", (race_result_id,)
+    )
+    conn.commit()
+
+
+def delete_race_result(conn: sqlite3.Connection, race_result_id: int) -> None:
+    """レース結果とその選手スコアを削除する（要確認レースの破棄用）。"""
+    conn.execute(
+        "DELETE FROM player_scores WHERE race_result_id = ?", (race_result_id,)
+    )
+    conn.execute("DELETE FROM race_results WHERE id = ?", (race_result_id,))
+    conn.commit()
+
+
+def race_result_entries(conn: sqlite3.Connection, race_result_id: int) -> list[dict]:
+    """保存済みレースの選手行を順位順に返す（管理画面の確認用）。"""
+    rows = conn.execute(
+        "SELECT rank, player_name, team_id, score, raw_ocr_text"
+        " FROM player_scores WHERE race_result_id = ? ORDER BY rank",
+        (race_result_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def standings(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     """チーム別 standings: 合計点・レース別獲得点・1位との差を付けて返す。"""
     rows = conn.execute(

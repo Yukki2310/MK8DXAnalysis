@@ -12,7 +12,28 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .preprocess import crop
+from .preprocess import crop, crop_rows, edge_density
+
+# 名前列のエッジ密度がこの値以上の行を「名前らしい行」とみなす
+NAME_INK_THRESHOLD = 0.02
+RESULT_LIKE_MIN_ROWS = 10
+
+
+def looks_like_result(frame: np.ndarray, roi: dict) -> bool:
+    """リザルト画面らしいかを軽量に判定する（OCRなし）。
+
+    名前列にインク（文字）がある行が10行以上あればリザルト画面の
+    パネルが表示されているとみなす。ステップ2の動画スキャンで
+    実績のある指標で、コース選択画面も拾うため、確定には使わず
+    「候補」の検出専用（棄却は順位列検証とフェーズ判別が担う）。
+    """
+    rows = crop_rows(frame, roi)
+    count = sum(
+        1
+        for regions in rows.values()
+        if "name" in regions and edge_density(regions["name"]) >= NAME_INK_THRESHOLD
+    )
+    return count >= RESULT_LIKE_MIN_ROWS
 
 
 class StillnessJudge:
