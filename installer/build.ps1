@@ -29,18 +29,20 @@ if ($LightOnly) { & $py $fetch --no-vlm } else { & $py $fetch }
 
 & $py -m PyInstaller installer\mk8dx.spec --noconfirm --distpath dist --workpath build
 
-$iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+$iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {
     foreach ($candidate in @(
             "${env:ProgramFiles}\Inno Setup 7\ISCC.exe",
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
             "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe")) {
-        if (Test-Path $candidate) { $iscc = Get-Item $candidate; break }
+        if (Test-Path $candidate) { $iscc = $candidate; break }
     }
 }
 if ($iscc) {
-    & $iscc.Source installer\mk8dx.iss
+    # 前回の分割ファイルが残らないよう、出力先を空にしてから作る
+    if (Test-Path dist\installer) { Remove-Item dist\installer -Recurse -Force }
+    & $iscc installer\mk8dx.iss
     Write-Host "インストーラ: dist\installer\MK8DXAnalysis-Setup.exe（容量が大きい場合は複数ファイルに分割されます）"
 } else {
     $zip = "dist\MK8DXAnalysis-portable.zip"

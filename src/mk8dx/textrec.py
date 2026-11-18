@@ -29,7 +29,7 @@ import re
 import cv2
 import numpy as np
 
-from .paths import resource_path
+from .paths import is_frozen, resource_path
 
 RAPID_MODEL_FILE = "ch_PP-OCRv5_rec_mobile.onnx"
 MODEL_FILE = RAPID_MODEL_FILE  # 互換用の別名
@@ -148,6 +148,10 @@ class VlmRecognizer:
             from transformers import AutoModelForImageTextToText, AutoProcessor
 
             local = models_dir() / self._folder
+            if not local.exists() and is_frozen():
+                # 配布版では勝手にダウンロードしない（同梱していない小型モデルなど）
+                self.error = "モデルが同梱されていません"
+                return False
             source = str(local) if local.exists() else self._hf_id
             offline = local.exists()
             kwargs = {"local_files_only": True} if offline else {}

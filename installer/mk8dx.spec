@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 ROOT = SPECPATH + "/.."
 
 import importlib.util
+import sys
 
 hidden = (
     collect_submodules("uvicorn")
@@ -51,10 +52,19 @@ a = Analysis(
               "matplotlib", "pandas", "scipy", "tkinter", "pytest"],
 )
 pyz = PYZ(a.pure)
+
+# アイコンはコードで描いて ico にする（画像ファイルを持たない）
+sys.path.insert(0, ROOT + "/src")
+from mk8dx.tray import make_icon_image  # noqa: E402
+
+os.makedirs(ROOT + "/build", exist_ok=True)
+ICON = ROOT + "/build/app.ico"
+make_icon_image(256).save(ICON, sizes=[(256, 256), (64, 64), (32, 32), (16, 16)])
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
     name="MK8DXAnalysis",
-    console=True,   # ログ表示とウィンドウを閉じて終了できるように、あえてコンソール付き
+    console=False,  # コンソールは出さない。操作と終了はタスクトレイから（ログは app.log）
+    icon=ICON,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="MK8DXAnalysis")

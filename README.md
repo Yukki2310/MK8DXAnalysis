@@ -59,7 +59,8 @@ tests/                     単体テスト（画像・OCR不要）
 
 ## 使い方（配布版）
 
-`MK8DXAnalysis.exe` を起動すると管理画面（ダッシュボード）が開く（黒いウィンドウはアプリ本体。閉じると終了）。
+`MK8DXAnalysis.exe` を起動すると管理画面（ダッシュボード）がブラウザで開く。コンソールは出ず、
+タスクトレイのアイコンから「管理画面を開く」「終了」ができる（二重に起動しても、開き直すだけ）。ログは `%APPDATA%\MK8DXAnalysispp.log`。
 
 1. 右上の「映像」で OBS の仮想カメラを選び、形式（2v2 / 3v3 / 4v4）を選んで「▶ 開始」。
 2. レースが終わるたびに自動で集計される。左に順位、右に直前のレースの結果（画面の名前・選手・チーム・点）が出る。
@@ -83,7 +84,9 @@ py -3.12 -m venv .venv
 ```
 
 配布物のビルド（PyInstaller onedir ＋ Inno Setup。Inno Setup が無ければ zip。文字認識モデルは初回に自動取得。
-視覚言語モデルを含む完全版は約17GBになる。`-LightOnly` を付けると PP-OCRv5 のみの軽量版）:
+視覚言語モデルを含む完全版は約17GBになる。`-LightOnly` を付けると PP-OCRv5 のみの軽量版）。
+Inno Setup（6 または 7）があればインストーラ（`dist\installer`、複数ファイルに分割）まで作る。
+モデルは無圧縮で格納してインストールを速くしており、小型モデル（Qwen3-VL-2B）は任意のコンポーネント:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File installer\build.ps1

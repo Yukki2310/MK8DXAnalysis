@@ -7,3 +7,6 @@ websockets>=12.0
 # 名前の文字認識（PP-OCRv5 認識モデルを ONNX Runtime で実行）
 rapidocr>=3.0
 onnxruntime>=1.18
+# タスクトレイ（インストーラ版）
+pystray>=0.19
+pillow>=10.0
