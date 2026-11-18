@@ -1,0 +1,130 @@
+"""runner.py（ライブランナー）のテスト。
+
+画像処理関数はフェイクに差し替え、状態遷移・保存・照合・承認の
+配線だけを検証する（実画像での検証は tools/step5_check.py）。
+"""
+import numpy as np
+import pytest
+
+from mk8dx import db
+from mk8dx.pipeline import StandingsReading
+from mk8dx.processor import RaceProcessor
+from mk8dx.roster import Observation, Roster
+from mk8dx.runner import LiveRunner
+from mk8dx.state import MatchState, Phase
+
+# 同名重複のない12名（照合の名前キーを一意にするため RR2 を使用）
+ORDER = [
+    "xı c.qq", "FR", "racist #1", "Xb", "RR★", "FR Flowx",
+    "A★ぜんだかいとしき", "A A", "xı avalon", "Xb◇ねえあまぁƄ",
+    "RR2", "racist #2",
+]
+TOTALS = [15, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+FRAME = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+
+class Script:
+    """フェイク関数の脚本（テストから値を切り替える）。"""
+
+    def __init__(self, names: list[str]):
+        self.like = False
+        self.phase = "race_result"
+        self.names = names
+
+
+def make_runner(tmp_path, script: Script) -> LiveRunner:
+    roster = Roster()
+    for name in ORDER:
+        roster.seed(name)
+    conn = db.connect(tmp_path / "test.db")
+    session_id = db.create_session(conn, "2v2", 12)
+    match = MatchState("2v2", 12, cooldown_sec=5.0)
+    runner = LiveRunner(
+        roi={},
+        ocr=None,
+        processor=RaceProcessor(roster, "2v2", assume_closed=True),
+        match=match,
+        conn=conn,
+        session_id=session_id,
+        result_like_fn=lambda frame, roi: script.like,
+        verify_fn=lambda frame, roi, ocr: True,
+        observations_fn=lambda frame, roi, ocr: [
+            Observation(name=n) for n in script.names
+        ],
+        classify_fn=lambda frame, roi, ocr: script.phase,
+        standings_fn=lambda frame, roi, ocr: StandingsReading(
+            entries=[
+                {"position": i + 1, "name": ORDER[i], "total": TOTALS[i]}
+                for i in range(12)
+            ]
+        ),
+    )
+    return runner
+
+
+def test_happy_path_with_cross_check(tmp_path):
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script)
+    assert runner.step(FRAME, now=0.0) == "WAITING_RACE"
+    script.like = True
+    assert runner.step(FRAME, now=0.4) == "RESULT_DETECTING"
+    # 2フレーム目で割り当てが安定し、確定して COOLDOWN へ
+    assert runner.step(FRAME, now=0.8) == "COOLDOWN"
+    assert runner.last_outcome is not None and runner.last_outcome.confirmed
+    standings = db.standings(runner.conn, runner.session_id)
+    assert sum(t["total"] for t in standings) == 82
+    # フェーズBが映ったら照合が走り、一致する
+    script.phase = "standings"
+    runner.step(FRAME, now=1.2)
+    assert runner.cross_check_problems == []
+    # 画面が消えてクールダウンが過ぎたら次のレース待ちへ
+    script.like = False
+    assert runner.step(FRAME, now=7.0) == "WAITING_RACE"
+
+
+def test_review_flow_approve(tmp_path):
+    noisy = list(ORDER)
+    noisy[9] = "今ねえあまあ!"
+    noisy[11] = "-"
+    script = Script(noisy)
+    runner = make_runner(tmp_path, script)
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    assert runner.step(FRAME, now=0.8) == "AWAITING_REVIEW"
+    assert runner.pending is not None
+    # 未承認の間は順位表に反映されない
+    assert db.standings(runner.conn, runner.session_id) == []
+    assert runner.approve_pending(now=1.0)
+    assert runner.match.phase is Phase.COOLDOWN
+    standings = db.standings(runner.conn, runner.session_id)
+    assert sum(t["total"] for t in standings) == 82
+
+
+def test_review_flow_discard(tmp_path):
+    noisy = list(ORDER)
+    noisy[9] = "今ねえあまあ!"
+    noisy[11] = "-"
+    script = Script(noisy)
+    runner = make_runner(tmp_path, script)
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    runner.step(FRAME, now=0.8)
+    assert runner.pending is not None
+    race_result_id = runner.pending.race_result_id
+    assert runner.discard_pending()
+    assert runner.match.phase is Phase.WAITING_RACE
+    assert db.race_result_entries(runner.conn, race_result_id) == []
+    assert db.standings(runner.conn, runner.session_id) == []
+
+
+def test_standings_first_is_not_processed_as_race(tmp_path):
+    script = Script(ORDER)
+    script.phase = "standings"  # Aを見逃してBだけが映ったケース
+    runner = make_runner(tmp_path, script)
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    runner.step(FRAME, now=0.8)
+    # レースとして保存されず、検出状態から戻る
+    assert runner.last_outcome is None
+    assert runner.match.phase is Phase.WAITING_RACE
+    assert db.standings(runner.conn, runner.session_id) == []
