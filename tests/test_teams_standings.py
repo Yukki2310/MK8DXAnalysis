@@ -173,3 +173,49 @@ def test_db_migration_and_valid_rows(tmp_path):
     latest = db.latest_session(conn)
     assert latest["id"] == sid and latest["completed"] == 1
     db.delete_race_result(conn, pending)
+
+
+def _name_image(text):
+    import cv2
+
+    img = np.full((72, 525, 3), 40, np.uint8)
+    cv2.putText(img, text, (10, 50), cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 0, 0), 7)
+    cv2.putText(img, text, (10, 50), cv2.FONT_HERSHEY_DUPLEX, 1.2, (255, 255, 255), 3)
+    return img
+
+
+def test_suggest_teams_from_leading_glyphs_even_when_ocr_text_is_wrong():
+    from mk8dx.teams import suggest_by_prefix
+
+    tags = ["AB", "CD", "EF", "GH", "IJ", "KL"]
+    truth = []
+    for t in tags:
+        truth += [f"{t} one", f"{t}two"]
+    # 並びを入れ替え（ゴール順は毎回違う）
+    order = [0, 3, 6, 9, 1, 4, 7, 10, 2, 5, 8, 11]
+    images = [_name_image(truth[i]) for i in order]
+    garbled = ["?"] * 12   # 文字認識が全く読めなかった
+    result = suggest_by_prefix(images, garbled, "2v2")
+    assert result is not None and result.valid
+    found = {frozenset(order[m] for m in t.members) for t in result.teams}
+    assert found == {frozenset((2 * k, 2 * k + 1)) for k in range(6)}
+
+
+def test_suggest_teams_returns_none_when_prefixes_do_not_pair_up():
+    from mk8dx.teams import suggest_by_prefix
+
+    words = ["AA", "BB", "CC", "DD", "EE", "FF", "GG", "HH", "II", "JJ", "KK", "LL"]
+    images = [_name_image(w) for w in words]
+    assert suggest_by_prefix(images, [""] * 12, "2v2") is None
+
+
+def test_suggest_teams_uses_ocr_prefix_for_case_differences():
+    from mk8dx.teams import suggest_by_prefix
+
+    # 大文字小文字の違いは画像では一致しないが、ラウンジの規則では同じタグ
+    names = ["ab one", "AB two", "cd x", "CD y", "ef x", "EF y",
+             "gh x", "GH y", "ij x", "IJ y", "kl x", "KL y"]
+    images = [_name_image(n) for n in names]
+    result = suggest_by_prefix(images, names, "2v2")
+    assert result is not None
+    assert {tuple(t.members) for t in result.teams} == {(2 * k, 2 * k + 1) for k in range(6)}

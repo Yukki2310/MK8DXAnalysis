@@ -20,7 +20,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from .clustering import Assignment, assign_teams
-from .teams import group_by_labels
+from .teams import group_by_labels, suggest_by_prefix
 from .roster import Observation, Resolution, Roster
 from .scoring import points_for_rank
 
@@ -227,7 +227,9 @@ class RaceProcessor:
             return ["選手を特定できていない順位があります"]
         return group_by_labels([e.team for e in entries], self.format).warnings
 
-    def _assign(self, resolution: Resolution) -> Assignment | None:
+    def _assign(
+        self, resolution: Resolution, consensus: list[Observation]
+    ) -> Assignment | None:
         """チーム分けを決める。全員にチームが設定済みならそれを使い、
         そうでなければ名前の先頭文字から推定して、未設定の選手に
         提案（自動）として書き込む。"""
@@ -240,7 +242,10 @@ class RaceProcessor:
         if all(e.team for e in entries):  # type: ignore[union-attr]
             return group_by_labels([e.team for e in entries], self.format)  # type: ignore[union-attr]
         names = [e.canonical_name for e in entries]  # type: ignore[union-attr]
-        guess = assign_teams(names, self.format)
+        # まず名前の先頭（タグ）の画像照合、決められなければ文字認識の読みから推定する
+        guess = suggest_by_prefix(
+            [o.image for o in consensus], names, self.format
+        ) or assign_teams(names, self.format)
         if guess.valid:
             had_labels = any(e.team for e in entries)  # type: ignore[union-attr]
             for team in guess.teams:
@@ -279,7 +284,7 @@ class RaceProcessor:
             })
 
         teams: list[dict] = []
-        assignment = self._assign(resolution)
+        assignment = self._assign(resolution, consensus)
         if assignment is not None:
             warnings.extend(w for w in assignment.warnings)
             if assignment.valid:

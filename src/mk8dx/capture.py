@@ -5,11 +5,25 @@ OCR実行タイミングを分離するため、このモジュールはフレ�
 """
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Iterator
 
+os.environ.setdefault("OPENCV_LOG_LEVEL", "SILENT")  # 番号の範囲外などの警告を出さない
+
 import cv2
 import numpy as np
+
+try:  # 環境変数より先に cv2 が読み込まれていた場合のため、直接も設定する
+    cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+except Exception:
+    pass
+
+# Windows ではカメラを DirectShow で開く（OBS仮想カメラもこちらで見える）。
+# 既定の順序だと FFmpeg の番号解釈が先に試され、範囲外の警告が大量に出る。
+_BACKEND = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+# 連続してこの数だけ開けない番号が続いたら、それ以降は探さない
+_MAX_CONSECUTIVE_MISSES = 2
 
 
 def list_cameras(max_index: int = 8) -> list[dict]:
@@ -20,14 +34,20 @@ def list_cameras(max_index: int = 8) -> list[dict]:
     開けない番号は一覧に含めない。
     """
     found: list[dict] = []
+    misses = 0
     for index in range(max_index):
-        cap = cv2.VideoCapture(index)
+        cap = cv2.VideoCapture(index, _BACKEND)
         try:
             if not cap.isOpened():
+                misses += 1
+                if misses >= _MAX_CONSECUTIVE_MISSES:
+                    break
                 continue
             ok, frame = cap.read()
             if not ok or frame is None:
+                misses += 1
                 continue
+            misses = 0
             h, w = frame.shape[:2]
             found.append({"index": index, "width": int(w), "height": int(h)})
         finally:
@@ -37,7 +57,7 @@ def list_cameras(max_index: int = 8) -> list[dict]:
 
 def grab_preview(index: int) -> bytes | None:
     """カメラのプレビュー画像（JPEGバイト列）を1枚取得する。"""
-    cap = cv2.VideoCapture(index)
+    cap = cv2.VideoCapture(index, _BACKEND)
     try:
         if not cap.isOpened():
             return None
@@ -62,7 +82,7 @@ class VirtualCamera:
         self._cap: cv2.VideoCapture | None = None
 
     def open(self) -> None:
-        cap = cv2.VideoCapture(self.device_index, cv2.CAP_DSHOW)
+        cap = cv2.VideoCapture(self.device_index, _BACKEND)
         if not cap.isOpened():
             cap = cv2.VideoCapture(self.device_index)
         if not cap.isOpened():
