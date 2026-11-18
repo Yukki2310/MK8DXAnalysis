@@ -1,7 +1,7 @@
 ; Inno Setup スクリプト。installer/build.ps1 が PyInstaller の出力(dist\MK8DXAnalysis)を作った後に
 ; ISCC.exe installer\mk8dx.iss でコンパイルする。出力: dist\installer\MK8DXAnalysis-Setup.exe
 #define AppName "MK8DX 自動集計"
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define Models "_internal\assets\models"
 
 [Setup]
