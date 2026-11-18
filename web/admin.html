@@ -49,11 +49,6 @@
   .seg.locked button { cursor: default; opacity: .6; }
   #top .ghost { background: #2c3650; color: #fff; border: 0; } #top .ghost:hover:not(:disabled) { background: #3a4668; }
   #top button.go, #top button.stop { padding: 8px 20px; }
-  #menuWrap { position: relative; }
-  #menu { position: absolute; right: 0; top: 44px; background: #fff; color: var(--text); border-radius: 10px; min-width: 210px;
-          box-shadow: 0 8px 28px rgba(0,0,0,.25); padding: 6px; z-index: 20; }
-  #menu button { display: block; width: 100%; text-align: left; background: transparent; color: var(--text); font-weight: 600; }
-  #menu button:hover:not(:disabled) { background: #eef1f8; } #menu button:disabled { background: transparent; color: #b4bccd; }
   #disconnected { display: none; background: var(--red); color: #fff; text-align: center; padding: 6px; font-weight: 700; }
 
   /* ---- ダッシュボード ---- */
@@ -128,19 +123,14 @@
   <span class="chip" id="status"><i class="dot"></i><span id="statusText">未開始</span></span>
   <span id="raceCount">0<small>/ 12</small></span>
   <span class="spacer"></span>
-  <button class="ghost" id="camBtn" title="ゲーム映像を選ぶ">映像：未選択</button>
+  <button class="ghost" id="camBtn">映像ソース選択</button>
   <span class="seg" id="fmtSeg" title="1チームの人数">
     <button data-fmt="2v2">2v2</button><button data-fmt="3v3">3v3</button><button data-fmt="4v4">4v4</button>
   </span>
+  <button class="ghost" id="undoBtn" title="直前のレースを取り消す">↶ 取り消し</button>
+  <button class="ghost" id="newMatchBtn" title="新しい試合を始める">＋ 新しい試合</button>
   <button class="go" id="startBtn">▶ 開始</button>
   <button class="stop" id="stopBtn" hidden>■ 停止</button>
-  <span id="menuWrap">
-    <button class="ghost" id="menuBtn" title="メニュー">⋯</button>
-    <div id="menu" hidden>
-      <button id="undoBtn">直前のレースを取り消す</button>
-      <button id="newMatchBtn">新しい試合</button>
-    </div>
-  </span>
 </header>
 <div id="disconnected">接続が切れました。アプリを確認してページを開き直してください。</div>
 
@@ -318,8 +308,6 @@ function renderHeader(s) {
   const m = s.match;
   $('#raceCount').innerHTML = `${m ? m.current_race : 0}<small>/ ${m ? m.total_races : 12}</small>`;
   $('#startBtn').hidden = !!live.running; $('#stopBtn').hidden = !live.running;
-  const cam = (cameras || []).find((c) => String(c.index) === selectedCam);
-  $('#camBtn').textContent = selectedCam === '' ? '映像：未選択' : `映像 ${Number(selectedCam) + 1}${cam ? ` · ${cam.width}×${cam.height}` : ''}`;
   $('#camBtn').disabled = !!live.running;
   const fmt = m ? m.format : LS.get('fmt', '2v2');
   $('#fmtSeg').classList.toggle('locked', !!live.running);
@@ -508,8 +496,6 @@ $('#startBtn').onclick = start; $('#stopBtn').onclick = () => api('POST', '/api/
 $('#status').onclick = () => { const t = $('#status').title; if (t) toast(t, 'error'); };
 $('#approveBtn').onclick = async () => { if (await api('POST', '/api/review/approve')) toast('確定'); };
 $('#discardBtn').onclick = async () => { if (await confirmDialog({ title: 'この結果を使いませんか？', okText: '使わない' })) await api('POST', '/api/review/discard'); };
-$('#menuBtn').onclick = (e) => { e.stopPropagation(); $('#menu').hidden = !$('#menu').hidden; };
-document.addEventListener('click', () => { $('#menu').hidden = true; });
 $('#undoBtn').onclick = async () => { if (await confirmDialog({ title: '直前のレースを取り消しますか？', okText: '取り消す' }) && await api('POST', '/api/race/undo')) toast('取り消しました'); };
 $('#newMatchBtn').onclick = async () => {
   const r = await confirmDialog({ title: '新しい試合', okText: '開始', option: '選手の登録も消す' });

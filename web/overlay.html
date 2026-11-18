@@ -9,7 +9,8 @@
      普段は小さな順位表を表示し、ゲームのリザルト画面が出ている間だけ、
      ゲームの順位表と重ならない側に大きな順位表を展開する。
      URL: ?pos=tr|tl|br|bl（小さい表の位置）  ?big=left|right（大きい表の側）  ?size=s|m|l */
-  :root { --panel: rgba(12, 15, 26, .82); --text: #fff; --accent: #ffd94d; }
+  :root { --panel: rgba(12, 15, 26, .82); --text: #fff; --accent: #ffd94d;
+          --gold: #f6c744; --silver: #cfd6e2; --bronze: #d9863d; --rest: #5b7fd6; }
   html, body {
     margin: 0; height: 100%; overflow: hidden; background: transparent; color: var(--text);
     font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
@@ -24,8 +25,13 @@
   .row .name { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .row .total { font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
   .row .rank { font-weight: 800; text-align: center; flex: none; }
-  .row.first { background: linear-gradient(90deg, rgba(64, 50, 6, .92), rgba(12, 15, 26, .82)); }
-  .row.first .rank { color: var(--accent); }
+  /* 順位の色: 1〜3位は金・銀・銅、それ以外は同じ色にそろえる */
+  .row { --c: var(--rest); }
+  .row.rank-1 { --c: var(--gold); background: linear-gradient(90deg, rgba(74, 56, 8, .92), rgba(12, 15, 26, .82) 70%); }
+  .row.rank-2 { --c: var(--silver); background: linear-gradient(90deg, rgba(58, 64, 78, .92), rgba(12, 15, 26, .82) 70%); }
+  .row.rank-3 { --c: var(--bronze); background: linear-gradient(90deg, rgba(70, 44, 18, .92), rgba(12, 15, 26, .82) 70%); }
+  .row .bar { background: var(--c); }
+  .row .rank { color: var(--c); }
 
   /* ---- 小さい順位表 ---- */
   #mini { position: fixed; width: 250px; margin: 22px; transition: opacity .45s ease, transform .55s ease;
@@ -131,12 +137,12 @@
           this.nodes.set(t.tag, row);
           this.el.appendChild(row);
           row.style.transform = `translateY(${y}px)`;
-          requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove('enter')));
+          setTimeout(() => row.classList.remove('enter'), 40);   // タイマーなら非表示中でも止まらない
         }
         row.style.height = this.d.h + 'px';
         row.style.setProperty('--i', i);
-        row.classList.toggle('first', t.rank === 1);
-        row.querySelector('.bar').style.background = t.color || '#888';
+        row.classList.remove('rank-0', 'rank-1', 'rank-2', 'rank-3');
+        row.classList.add('rank-' + (t.rank <= 3 ? t.rank : 0));
         row.querySelector('.rank').textContent = t.rank;
         row.querySelector('.name').textContent = t.tag;
         row.style.transform = `translateY(${y}px)`;
