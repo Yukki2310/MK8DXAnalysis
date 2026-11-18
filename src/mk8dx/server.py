@@ -18,6 +18,8 @@ from pydantic import BaseModel
 
 from . import db
 from .clustering import assign_teams
+from .processor import RaceProcessor
+from .roster import Observation, Roster
 from .scoring import validate_scores
 from .state import MatchState
 
@@ -32,6 +34,20 @@ _match: MatchState | None = None
 _session_id: str | None = None
 _clients: set[WebSocket] = set()
 _lock = asyncio.Lock()
+
+# ロスターはセッションをまたいで保持する（選手登録はマッチごとではなく
+# グループ単位の情報のため）。プロセッサは形式が変わったら作り直す。
+_roster = Roster()
+_processor: RaceProcessor | None = None
+_processor_format: str | None = None
+
+
+def _get_processor(fmt: str) -> RaceProcessor:
+    global _processor, _processor_format
+    if _processor is None or _processor_format != fmt:
+        _processor = RaceProcessor(_roster, fmt, assume_closed=True)
+        _processor_format = fmt
+    return _processor
 
 
 def _db():
@@ -133,6 +149,103 @@ async def simulate_result(body: SimulateResult):
         await alert("検証で問題が検出されました", {"problems": problems})
     await broadcast_state()
     return {"ok": ok, "validation": validation.problems, "warnings": assignment.warnings}
+
+
+def roster_payload() -> dict:
+    return {
+        "entries": [
+            {
+                "id": e.id,
+                "name": e.canonical_name,
+                "confirmed": e.confirmed,
+                "capacity": e.capacity,
+                "races_seen": e.races_seen,
+                "has_flag": bool(e.flag_signatures),
+            }
+            for e in _roster.entries
+        ]
+    }
+
+
+@app.get("/api/roster")
+async def get_roster():
+    return roster_payload()
+
+
+@app.post("/api/roster")
+async def seed_roster(body: dict):
+    """ロスターへ選手を事前登録する（ステップ3の結論: 事前登録が本命）。"""
+    name = (body.get("name") or "").strip()
+    if not name:
+        return {"error": "name が空です"}
+    entry = _roster.seed(name)
+    return {"id": entry.id, **roster_payload()}
+
+
+@app.delete("/api/roster/{entry_id}")
+async def delete_roster(entry_id: int):
+    removed = _roster.remove(entry_id)
+    return {"removed": removed, **roster_payload()}
+
+
+class SimulateRace(BaseModel):
+    names: list[str]          # 順位順に12名（OCR読み相当の生の名前）
+    race_number: int | None = None
+
+
+@app.post("/api/simulate_race")
+async def simulate_race(body: SimulateRace):
+    """カメラなし検証用（ロスター照合あり）: 生の名前12名を投入し、
+    名寄せ→チーム判定→集計を通す。確定できないレースは
+    AWAITING_REVIEW として警告し、結果は is_valid=False で保存する。"""
+    global _match
+    if _match is None or _session_id is None:
+        reset_match("2v2")
+    assert _match is not None
+    conn = _db()
+    race_number = body.race_number or (_match.current_race + 1)
+    processor = _get_processor(_match.format)
+    outcome = processor.process_single(
+        [Observation(name=n) for n in body.names], race_number
+    )
+
+    team_id_by_index: dict[int, int] = {}
+    if outcome.assignment is not None:
+        for team in outcome.assignment.teams:
+            team_id = db.get_or_create_team(
+                conn, _session_id, team.tag, team.normalized_tag
+            )
+            for idx in team.members:
+                team_id_by_index[idx] = team_id
+    entries = [
+        {
+            "rank": e["rank"],
+            "player_name": e["resolved_name"] or e["raw_name"],
+            "team_id": team_id_by_index.get(e["rank"] - 1),
+            "score": e["score"],
+            "raw_ocr_text": e["raw_name"],
+        }
+        for e in outcome.entries
+    ]
+    db.save_race_result(
+        conn, _session_id, race_number, entries, is_valid=outcome.confirmed
+    )
+    _match.on_result_candidate()
+    _match.on_screen_stable()
+    _match.on_processing_done(valid=outcome.confirmed)
+    if not outcome.confirmed:
+        await alert(
+            "ロスター照合で要確認のレースがあります",
+            {"problems": outcome.problems, "race_number": race_number},
+        )
+    await broadcast_state()
+    return {
+        "status": outcome.status,
+        "problems": outcome.problems,
+        "warnings": outcome.warnings,
+        "teams": outcome.teams,
+        "entries": outcome.entries,
+    }
 
 
 @app.get("/overlay")

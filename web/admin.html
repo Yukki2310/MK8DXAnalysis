@@ -31,6 +31,15 @@
 </section>
 
 <section>
+  <h2>ロスター（選手の事前登録）</h2>
+  <p>対戦する12名を登録しておくと、OCRの読みを名寄せして集計します（推奨の運用）。同名の選手は2回登録してください。国旗はレース中の自動学習でひも付きます。</p>
+  <input id="rosterName" placeholder="選手名（タグ込み）" size="32">
+  <button id="rosterAdd">登録する</button>
+  <table><thead><tr><th>ID</th><th>名前</th><th>状態</th><th>出現レース</th><th>国旗</th><th></th></tr></thead>
+  <tbody id="rosterBody"></tbody></table>
+</section>
+
+<section>
   <h2>警告</h2>
   <div id="alerts">なし</div>
 </section>
@@ -39,6 +48,14 @@
   <h2>現在の順位表</h2>
   <table><thead><tr><th>順位</th><th>チーム</th><th>合計</th><th>首位との差</th><th>直前レース</th></tr></thead>
   <tbody id="standings"></tbody></table>
+</section>
+
+<section>
+  <h2>検証用: リザルト投入（ロスター照合あり）</h2>
+  <p>OCRで読んだままの名前12名（順位順、カンマ区切り）を投入し、名寄せ→集計を通します。確定できない場合は警告に理由が出ます。</p>
+  <textarea id="raceNames" rows="2">XI c.qq,FR,racist #1,Xb,RR,FRFlowx,Aかぜんだかいとしき,AA,XIavalon,今ねえあまあ!,日日-,-</textarea>
+  <button id="simulateRace">照合して投入する</button>
+  <span id="raceResult"></span>
 </section>
 
 <section>
@@ -72,6 +89,47 @@
   document.getElementById('reset').onclick = async () => {
     await fetch('/api/session', { method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ format: document.getElementById('format').value, total_races: 12 }) });
+  };
+  const rosterBody = document.getElementById('rosterBody');
+  function renderRoster(entries) {
+    rosterBody.innerHTML = '';
+    for (const e of entries || []) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${e.id}</td><td>${e.name}</td><td>${e.confirmed ? '本登録' : '仮登録'}</td>` +
+        `<td>${e.races_seen}</td><td>${e.has_flag ? 'あり' : 'なし'}</td>`;
+      const td = document.createElement('td');
+      const btn = document.createElement('button');
+      btn.textContent = '削除';
+      btn.onclick = async () => {
+        const res = await fetch(`/api/roster/${e.id}`, { method: 'DELETE' });
+        renderRoster((await res.json()).entries);
+      };
+      td.appendChild(btn);
+      tr.appendChild(td);
+      rosterBody.appendChild(tr);
+    }
+  }
+  async function loadRoster() {
+    const res = await fetch('/api/roster');
+    renderRoster((await res.json()).entries);
+  }
+  loadRoster();
+  document.getElementById('rosterAdd').onclick = async () => {
+    const input = document.getElementById('rosterName');
+    const name = input.value.trim();
+    if (!name) return;
+    const res = await fetch('/api/roster', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name }) });
+    renderRoster((await res.json()).entries);
+    input.value = '';
+  };
+  document.getElementById('simulateRace').onclick = async () => {
+    const names = document.getElementById('raceNames').value.split(',').map(s => s.trim());
+    const res = await fetch('/api/simulate_race', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ names }) });
+    const data = await res.json();
+    document.getElementById('raceResult').textContent =
+      data.status === 'confirmed' ? '確定しました' : '要確認: ' + (data.problems || []).join(' / ');
   };
   document.getElementById('simulate').onclick = async () => {
     const names = document.getElementById('simNames').value.split(',').map(s => s.trim());
