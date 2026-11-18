@@ -436,7 +436,13 @@ class Roster:
             row: list[float] = []
             for e in slots:
                 c = name_cost(obs.name, e.canonical_name)
-                c += _flag_adjustment(obs.flag, e)
+                # 名前が完全一致する場合は国旗で覆さない（ステップ7
+                # 検証: 抽出ノイズで国旗ペナルティがかかり、同チームの
+                # 'racist #1' が '#2' に化けた）。国旗が要るのは同名の
+                # 別人同士の区別だが、その場合は名前コストが両方とも
+                # 0で、どの枠に入っても表示名は同じになる。
+                if c > 0:
+                    c += _flag_adjustment(obs.flag, e)
                 if not e.confirmed:
                     c += PROVISIONAL_PENALTY
                 row.append(c)
@@ -473,6 +479,7 @@ class Roster:
               race_index: int) -> None:
         """割り当て結果を選手名簿に反映する（多数決・容量・国旗）。"""
         per_entry_rows: Counter = Counter()
+        flags_by_entry: dict[int, list[np.ndarray]] = {}
         for r, entry_id in enumerate(resolution.entry_ids):
             if entry_id is None or resolution.low_confidence[r]:
                 continue  # 埋め合わせは推測なので学習しない
@@ -482,6 +489,8 @@ class Roster:
             obs = observations[r]
             entry.variants[obs.name] += 1
             per_entry_rows[entry_id] += 1
+            if obs.flag is not None:
+                flags_by_entry.setdefault(entry_id, []).append(obs.flag)
             if obs.flag is not None:
                 if not entry.flag_signatures:
                     entry.flag_signatures.append(obs.flag)
@@ -500,6 +509,25 @@ class Roster:
             entry = self._entry_by_id(entry_id)
             if entry is not None and count > entry.capacity:
                 entry.capacity = count
+        # 容量の国旗ヒント: 同じ名前で明らかに違う国旗が観測されたら、
+        # 同名の別人がいる証拠として容量を広げる（ステップ7検証:
+        # 片方の RR★ が空読みになったレースがあると同時出現だけでは
+        # 容量が育たず、次のレースでもう片方が幻エントリに流れた）。
+        # 遠い国旗そのものは毒入れ防止のため署名には取り込まない。
+        for entry_id, flags in flags_by_entry.items():
+            entry = self._entry_by_id(entry_id)
+            if entry is None:
+                continue
+            reps: list[np.ndarray] = list(entry.flag_signatures)
+            n_clusters = 1 if reps else 0
+            for f in flags:
+                if all(flag_distance(f, c) > FLAG_DIFF_THRESHOLD
+                       for c in reps):
+                    reps.append(f)
+                    n_clusters += 1
+            hint = min(n_clusters, 4)
+            if hint > entry.capacity:
+                entry.capacity = hint
         # 未割り当て行は新規プレイヤー候補として仮登録する
         new_ids: list[int] = []
         for r in resolution.new_candidates:

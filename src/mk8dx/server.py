@@ -26,6 +26,7 @@ from .preprocess import load_roi_config
 from .processor import RaceProcessor
 from .roster import Observation, Roster
 from .runner import LiveRunner, save_outcome
+from .screenai import create_ocr_engine
 from .scoring import validate_scores
 from .state import MatchState
 
@@ -365,7 +366,10 @@ async def live_start(body: dict):
         global _runner
         conn = db.connect(DB_PATH)
         try:
-            ocr = OcrEngine()
+            ocr = create_ocr_engine()
+            _live_status["ocr_engine"] = (
+                "screenai" if ocr.using_screenai else "paddle"
+            )
             roi = load_roi_config(str(BASE_DIR / "config" / "roi_1080p.json"))
             # 本登録の名簿がある場合は closed（消去法あり）、無い場合は
             # open で名簿を自動構築する（登録なし運用）
