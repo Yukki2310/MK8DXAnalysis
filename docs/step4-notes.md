@@ -1,8 +1,8 @@
-# ステップ4検証メモ（状態機械への組み込みとロスター登録UI）
+# ステップ4検証メモ（状態機械への組み込みと選手名簿登録UI）
 
 実装日: 2026-11-18
 実装: `src/mk8dx/processor.py`（新規）、`pipeline.extract_observations`、
-`server.py` のロスターAPI＋simulate_race、`web/admin.html` のロスターUI。
+`server.py` の選手名簿API＋simulate_race、`web/admin.html` の選手名簿UI。
 テスト全54件合格。検証ツール `tools/step4_check.py`。
 
 ## 実装したもの
@@ -31,8 +31,8 @@
 - サーバー: `GET/POST /api/roster`、`DELETE /api/roster/{id}`、
   `POST /api/simulate_race`（生の名前12名→名寄せ→集計。
   confirmed のときだけ is_valid=True で保存し、状態機械を
-  AWAITING_REVIEW に倒す）。ロスターはセッションをまたいで保持。
-- 管理画面: ロスター登録セクション（登録・一覧・削除）と
+  AWAITING_REVIEW に倒す）。選手名簿はセッションをまたいで保持。
+- 管理画面: 選手名簿登録セクション（登録・一覧・削除）と
   照合テスト投入欄を追加。
 - スモークテスト済み: セッション開始→12名登録→実測の生読み投入で
   awaiting_review（低信頼2件のみ理由）＋正しいチーム集計、
@@ -46,7 +46,7 @@
   暫定集計は正しい）。
 - レース4: 同様に合計82で、A 25 / racist 19 / FR 11 / Xb 13 /
   xı 10 / RR★ 4。埋め合わせは5位と11位。
-- レース1（open、ロスターはレース3・4用）: 未照合は2行
+- レース1（open、選手名簿はレース3・4用）: 未照合は2行
   （'ths' と 'メ念れえあまあ'）で awaiting_review に落ちた。
   ただし 'Rev' が RR★ に誤って吸着した（コスト1.6）。短い名前の
   誤受理は閾値だけでは防ぎきれないので、未照合が1行でもある
