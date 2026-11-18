@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .clustering import Assignment, assign_teams
-from .ocr import OcrEngine, parse_points_text, parse_total_text
+from .ocr import OcrEngine, parse_points_text
 from .preprocess import crop_rows, edge_density
-from .scoring import points_for_rank, validate_scores
+from .scoring import POINTS, points_for_rank, validate_scores
 from .tags import normalize_name
 
 # フェーズ判別: スコア列の平均エッジ密度の閾値。
@@ -44,30 +44,84 @@ class StandingsReading:
     problems: list[str] = field(default_factory=list)
 
 
+def classify_plain_phase(totals: list[int | None]) -> str:
+    """スコア列が空の「プレーン表示」フレームを累計列の値で判別する。
+
+    実動画検証（2026-11-18）で、フェーズAは加算アニメーション完了後に
+    '+' が消え、累計列だけが残る表示になることを確認した。フェーズBも
+    同じ見た目になるため、値のパターンで切り分ける:
+    - 読めた累計がすべて配点表の値で、行順に完全な降順なら standings。
+      これは「1レース目終了直後のフェーズB」の署名（累計＝配点で、
+      累計順＝降順）。1レース目のフェーズA後半も原理的には同じ見た目に
+      なるが、集計トリガーは '+' のあるフェーズA前半であり、照合用途では
+      どちらでも（名前, 累計）の組は正しいため、standings に寄せる。
+    - 行順の累計がほぼ降順（8割以上の隣接ペアが非増加）なら、
+      累計順に並んだフェーズB → standings
+    - それ以外（フェーズA後半の非ソートな累計、フェーズBの並び替え
+      アニメーション途中など）はこの1枚では決められない → unknown
+    ライブ運用では集計トリガーは '+' のあるフェーズA前半なので、
+    unknown でも集計は止まらない。照合は前後の文脈で判断する。
+    """
+    readable = [t for t in totals if t is not None]
+    if len(readable) >= 5:
+        pairs = list(zip(readable, readable[1:]))
+        descending = all(a > b for a, b in pairs)
+        if descending and set(readable) <= set(POINTS.values()):
+            return PHASE_STANDINGS
+        if len(readable) >= 8 and pairs and (
+            sum(1 for a, b in pairs if a >= b) / len(pairs) >= 0.8
+        ):
+            return PHASE_STANDINGS
+    return PHASE_UNKNOWN
+
+
 def classify_phase(frame: np.ndarray, roi: dict, ocr: OcrEngine) -> str:
     """フェーズを判別する。
 
-    1. 上位3行のスコア列OCRで '+' が読めればゴール順画面で確定。
-    2. ダメな場合はスコア列の平均エッジ密度で判定する。ゴール順画面は
-       全行に数字があるため密度が高く、累計画面はスコア列が空で低い。
+    1. スコア列OCRで '+' と規定配点が読めればゴール順画面（フェーズA確定）。
+       '+' だけが複数行で読める場合も、加算アニメーション途中の
+       フェーズAとみなす（'+' は累計画面には現れない）。
+    2. スコア列の平均エッジ密度が高く、かつ配点らしい値が複数行で
+       読める場合もフェーズA。密度だけでは判定しない: パネルは半透明で、
+       明るい背景が透けると累計画面でも密度が上がるため（実動画で
+       誤判定を確認済み 2026-11-18）。
+    3. スコア列が空（プレーン表示）の場合は累計列の値パターンで判別する
+       （classify_plain_phase）。決められない場合は unknown を返す。
     """
     rows = crop_rows(frame, roi)
-    for rank in (1, 2, 3):
+    plus_rows = 0
+    valid_rows = 0
+    for rank in range(1, 13):
         regions = rows.get(rank)
-        if regions and "score" in regions:
-            text, _ = ocr.recognize(regions["score"])
-            _, has_plus = parse_points_text(text)
-            if has_plus:
-                return PHASE_RACE_RESULT
+        if not regions or "score" not in regions:
+            continue
+        text, _ = ocr.recognize(regions["score"])
+        value, has_plus = parse_points_text(text)
+        if has_plus:
+            plus_rows += 1
+        if value is not None:
+            valid_rows += 1
+    if valid_rows >= 1 and plus_rows >= 1:
+        return PHASE_RACE_RESULT
+    if plus_rows >= 2:
+        return PHASE_RACE_RESULT
     densities = [
         edge_density(regions["score"])
         for regions in rows.values()
         if "score" in regions
     ]
-    if not densities:
-        return PHASE_UNKNOWN
-    mean_ink = sum(densities) / len(densities)
-    return PHASE_RACE_RESULT if mean_ink >= SCORE_INK_THRESHOLD else PHASE_STANDINGS
+    if densities:
+        mean_ink = sum(densities) / len(densities)
+        if mean_ink >= SCORE_INK_THRESHOLD and valid_rows >= 3:
+            return PHASE_RACE_RESULT
+    totals: list[int | None] = []
+    for rank in range(1, 13):
+        regions = rows.get(rank)
+        if regions and "total" in regions:
+            totals.append(ocr.recognize_total(regions["total"]))
+        else:
+            totals.append(None)
+    return classify_plain_phase(totals)
 
 
 def analyze_result_frame(
@@ -85,7 +139,7 @@ def analyze_result_frame(
             problems.append(f"{rank}位のROIが未定義です")
             continue
         # 名前は生画像OCRが最も精度が高い（実キャプチャ検証 2026-11-18）
-        name, name_conf = ocr.recognize_best(regions["name"])
+        name, name_conf = ocr.recognize_name(regions["name"])
         if not name:
             problems.append(f"{rank}位の名前を読み取れませんでした")
         # スコアは順位から規定配点で確定する。スコア列の数字はセグメント表示
@@ -97,8 +151,8 @@ def analyze_result_frame(
             problems.append(
                 f"{rank}位のスコアOCR '{score_text}' が規定配点 {score} と一致しません"
             )
-        total_text, _ = (
-            ocr.recognize(regions["total"]) if "total" in regions else ("", 0.0)
+        total_shown = (
+            ocr.recognize_total(regions["total"]) if "total" in regions else None
         )
         scores_by_rank[rank] = score
         entries.append(
@@ -108,7 +162,7 @@ def analyze_result_frame(
                 "score": score,
                 "score_source": "rank_table",
                 "score_ocr_text": score_text,
-                "total_shown": parse_total_text(total_text),
+                "total_shown": total_shown,
                 "name_confidence": name_conf,
             }
         )
@@ -152,13 +206,12 @@ def analyze_standings_frame(
         if regions is None:
             problems.append(f"{position}行目のROIが未定義です")
             continue
-        name, _ = ocr.recognize_best(regions["name"])
-        total_text, _ = (
-            ocr.recognize(regions["total"]) if "total" in regions else ("", 0.0)
+        name, _ = ocr.recognize_name(regions["name"])
+        # 累計点はセグメントフォントのため専用リーダー（en+拡大+二値化の
+        # 多数決）で best-effort に読む。読めなくても名前の照合は継続できる。
+        total = (
+            ocr.recognize_total(regions["total"]) if "total" in regions else None
         )
-        # 累計点はセグメントフォントでOCRが安定しないため best-effort。
-        # 読めなくても照合（名前の並び順チェック）は継続できる。
-        total = parse_total_text(total_text)
         if not name:
             problems.append(f"{position}行目の名前を読み取れませんでした")
         entries.append({"position": position, "name": name, "total": total})
