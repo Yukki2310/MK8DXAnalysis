@@ -104,6 +104,8 @@
   /* 選手 */
   .pimg { width: 230px; height: 46px; object-fit: contain; background: #28303f; border-radius: 6px; display: block; }
   .pimg.none { display: flex; align-items: center; justify-content: center; color: #9aa6bd; font-size: 12px; }
+  .pimg.small { width: 150px; height: 30px; margin-bottom: 4px; opacity: .85; }
+  tr.uncertain td { background: var(--amber-bg); }
   .players { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
   .player { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fafbfe; }
   .player .fields { display: grid; grid-template-columns: 64px 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
@@ -164,7 +166,7 @@
     <p class="lead" id="pendingLead"></p>
     <div class="scroll-x">
       <table>
-        <thead><tr><th>着順</th><th>ゲーム画面の名前</th><th>名前</th><th>チーム</th><th class="num-col">点</th></tr></thead>
+        <thead><tr><th>着順</th><th>いま画面に出ている名前</th><th>登録されている選手</th><th>チーム</th><th class="num-col">点</th></tr></thead>
         <tbody id="pendingBody"></tbody>
       </table>
     </div>
@@ -461,22 +463,40 @@ function renderPending(s) {
   }, (tr, e) => {
     const pl = e.entry_id != null ? plist.get(e.entry_id) : null;
     const [, tdImg, tdName, tdTeam, tdScore] = tr.children;
-    if (!pl) {
-      tdImg.textContent = ''; tdName.textContent = '（選手を特定できませんでした）'; tdTeam.textContent = '';
-    } else {
-      if (!tdName.firstChild || !(tdName.firstChild instanceof HTMLInputElement)) {
-        tdImg.replaceChildren(pImage(pl));
-        const ni = h('input', { type: 'text', size: 16 });
-        const ti = h('input', { type: 'text', size: 10, list: 'teamList', placeholder: 'チーム名' });
-        tdName.replaceChildren(ni); tdTeam.replaceChildren(ti);
-        bindField(ni, () => pl.name, renamePlayer(pl.id));
-        bindField(ti, () => pl.team, setTeam(pl.id));
-      }
-      syncField(tdName.firstChild, pl.name);
-      syncField(tdTeam.firstChild, pl.team);
-      tdTeam.querySelector('.badge')?.remove();
-      if (pl.team_auto) tdTeam.append(h('span', { class: 'badge', text: '自動' }));
+    tr.classList.toggle('uncertain', !!e.uncertain);
+
+    // いま画面に出ている名前（今回のレースの実画像）。登録済みの選手の画像とは別に出す
+    const src = `/api/review/row/${e.rank}/image?v=${p.race_result_id}`;
+    if (tdImg.dataset.src !== src) {
+      tdImg.dataset.src = src;
+      tdImg.replaceChildren(h('img', { class: 'pimg', src, alt: '今回の画面の名前' }));
     }
+
+    // 入力欄は、いま対応づいている選手のIDに対して保存する（行の対応が変わっても追従する）
+    if (!tdName.querySelector('input')) {
+      const ni = h('input', { type: 'text', size: 16 });
+      const ti = h('input', { type: 'text', size: 10, list: 'teamList', placeholder: 'チーム名' });
+      tdName.replaceChildren(h('div', { class: 'regimg' }), ni, h('div', { class: 'warn-text' }));
+      tdTeam.replaceChildren(ti);
+      bindField(ni, () => ni.dataset.remote, (v) => renamePlayer(Number(tr.dataset.entry))(v));
+      bindField(ti, () => ti.dataset.remote, (v) => setTeam(Number(tr.dataset.entry))(v));
+    }
+    const [ni, ti] = [tdName.querySelector('input'), tdTeam.querySelector('input')];
+    ni.disabled = ti.disabled = !pl;
+    tr.dataset.entry = pl ? pl.id : '';
+    const regimg = tdName.querySelector('.regimg');
+    const regsrc = pl && pl.has_image ? `/api/roster/${pl.id}/image?v=${pl.image_v}` : '';
+    if (regimg.dataset.src !== regsrc) {
+      regimg.dataset.src = regsrc;
+      regimg.replaceChildren(regsrc ? h('img', { class: 'pimg small', src: regsrc, alt: '登録されている選手' }) : '');
+    }
+    syncField(ni, pl ? pl.name : '');
+    syncField(ti, pl ? pl.team : '');
+    tdName.querySelector('.warn-text').textContent = !pl
+      ? '選手を特定できませんでした。'
+      : (e.uncertain ? '画面の名前と、登録されている選手が違うかもしれません。' : '');
+    tdTeam.querySelector('.badge')?.remove();
+    if (pl && pl.team_auto) tdTeam.append(h('span', { class: 'badge', text: '自動' }));
     tdScore.textContent = e.score;
   });
 

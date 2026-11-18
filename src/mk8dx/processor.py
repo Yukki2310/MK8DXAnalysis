@@ -21,9 +21,10 @@ from dataclasses import dataclass, field
 
 from .clustering import Assignment, assign_teams
 from .teams import group_by_labels, suggest_by_prefix
-from .roster import Observation, Resolution, Roster
+from .roster import Observation, Resolution, Roster, encode_thumb
 from .scoring import points_for_rank
 
+UNCERTAIN_COST = 2.0   # 照合コストがこれを超える割り当ては「別人かも」として知らせる
 MAX_CROPS = 3        # 順位ごとに保持する名前クロップの枚数
 MAX_NAME_READS = 3   # 1選手あたりの表示名の文字認識回数（多数決で安定させる）
 
@@ -42,6 +43,9 @@ class RaceOutcome:
     problems: list[str] = field(default_factory=list)   # 確定を妨げる問題
     warnings: list[str] = field(default_factory=list)   # 非ブロッキングの注意
     assignment: Assignment | None = None
+    # 今回の各順位の名前行の実画像（JPEG）。確認画面で「いま画面に出ている名前」を
+    # 見せるために使う（登録済みの選手の画像とは別物）
+    row_images: list = field(default_factory=list)
 
     @property
     def confirmed(self) -> bool:
@@ -281,6 +285,9 @@ class RaceProcessor:
                 "score": points_for_rank(rank),
                 "entry_id": resolution.entry_ids[i],
                 "low_confidence": resolution.low_confidence[i],
+                # 画像の照合距離が大きい（別の人かもしれない）割り当て
+                "uncertain": resolution.low_confidence[i]
+                or resolution.costs[i] > UNCERTAIN_COST,
             })
 
         teams: list[dict] = []
@@ -309,4 +316,5 @@ class RaceProcessor:
             problems=problems,
             warnings=warnings,
             assignment=assignment,
+            row_images=[encode_thumb(o.image) for o in consensus],
         )

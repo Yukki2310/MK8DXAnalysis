@@ -218,6 +218,18 @@ async def undo_race():
 
 
 # -- 要確認レース -------------------------------------------------------
+@app.get("/api/review/row/{rank}/image")
+async def review_row_image(rank: int):
+    """確認中のレースの、今回の画面に出ていた名前の実画像。"""
+    with _lock:
+        pending = _runner.pending if _runner is not None else None
+        images = pending.outcome.row_images if pending else []
+    if not 1 <= rank <= len(images) or not images[rank - 1]:
+        return Response(status_code=404)
+    return Response(content=images[rank - 1], media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/review/approve")
 async def review_approve():
     with _lock:
