@@ -22,7 +22,9 @@ GPU が無ければ PP-OCRv5 の認識モデルで読む。どれも使えない
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 
 import cv2
 import numpy as np
@@ -36,6 +38,11 @@ VLM_PROMPT = (
     "この画像は対戦ゲームのプレイヤー名です。画像に書かれている文字を、記号（★ ☆ ◇ # など）や"
     "大文字小文字も含めて、一字一句そのまま書き起こしてください。"
     "説明や引用符は不要で、文字だけを出力してください。"
+)
+TEAM_RULES = (
+    "ルール: 同じチームの選手は、名前の先頭が同じ文字列（タグ）で始まります。"
+    "英字の大文字と小文字は同じとみなし、ひらがなとカタカナも同じとみなします。"
+    "濁点・半濁音は区別します。文字認識の結果ではなく、画像を見て判断してください。"
 )
 # (モデルのフォルダ名, Hugging Face のID, 必要な空きGPUメモリ[GB])
 VLM_TIERS = [
@@ -173,18 +180,19 @@ class VlmRecognizer:
         return out
 
     def _run(self, images: list[np.ndarray]) -> list[str]:
-        if self._model is None or not images:
-            return [""] * len(images)
+        contents = [
+            [{"type": "image", "image": _pil(img)}, {"type": "text", "text": VLM_PROMPT}]
+            for img in images
+        ]
+        return self._generate(contents, max_new_tokens=40)
+
+    def _generate(self, contents: list[list[dict]], max_new_tokens: int) -> list[str]:
+        """メッセージ内容（画像・テキスト）ごとに、まとめて1回で生成する。失敗は空文字。"""
+        if self._model is None or not contents:
+            return [""] * len(contents)
         import torch
-        from PIL import Image
 
-        def pil(img: np.ndarray):
-            big = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-            return Image.fromarray(cv2.cvtColor(big, cv2.COLOR_BGR2RGB))
-
-        messages = [[{"role": "user", "content": [
-            {"type": "image", "image": pil(img)},
-            {"type": "text", "text": VLM_PROMPT}]}] for img in images]
+        messages = [[{"role": "user", "content": c}] for c in contents]
         try:
             inputs = self._proc.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=True,
@@ -192,13 +200,60 @@ class VlmRecognizer:
             ).to(self._model.device)
             with torch.no_grad():
                 generated = self._model.generate(
-                    **inputs, max_new_tokens=40, do_sample=False)
+                    **inputs, max_new_tokens=max_new_tokens, do_sample=False)
             texts = self._proc.batch_decode(
                 generated[:, inputs["input_ids"].shape[1]:],
                 skip_special_tokens=True)
             return [t.strip() for t in texts]
         except Exception:
-            return [""] * len(images)
+            return [""] * len(contents)
+
+    # -- チーム分けの推定（名前画像12枚を見て、同じタグの選手を組にする）----
+    def suggest_teams(self, images: list[np.ndarray], team_size: int) -> list[dict] | None:
+        """12枚の名前画像から [{"tag": 文字列, "members": [0始まりの行番号...]}] を返す。
+
+        読めなかった・形式が違う場合は None。結果の妥当性（人数など）は呼び出し側で検証する。
+        """
+        if len(images) != 12:
+            return None
+        content: list[dict] = []
+        for i, img in enumerate(images):
+            content += [{"type": "text", "text": f"{i + 1}番:"},
+                        {"type": "image", "image": _pil(img)}]
+        content.append({"type": "text", "text": (
+            f"上の12枚は、対戦ゲーム（{team_size}人1組で{12 // team_size}チーム）のプレイヤー名の画像です。"
+            + TEAM_RULES +
+            "どの選手が同じチームかを推定し、次のJSONだけを出力してください。"
+            '{"teams":[{"tag":"共通のタグ","members":[番号,番号]}, ...]}')})
+        raw = self._generate([content], max_new_tokens=500)[0]
+        match = re.search(r"\{.*\}", raw, re.S)
+        if not match:
+            return None
+        try:
+            teams = json.loads(match.group(0))["teams"]
+            return [{"tag": str(t.get("tag", "")),
+                     "members": [int(x) - 1 for x in t["members"]]} for t in teams]
+        except Exception:
+            return None
+
+    def label_teams(self, groups: list[list[np.ndarray]]) -> list[str]:
+        """チームごとの名前画像から、共通するタグ（チーム名）を書き起こす。"""
+        contents = []
+        for images in groups:
+            content = [{"type": "image", "image": _pil(img)} for img in images]
+            content.append({"type": "text", "text": (
+                "これらは同じチームの選手名です。" + TEAM_RULES +
+                "名前の先頭に共通するタグ（チーム名）だけを、記号も含めてそのまま書いてください。"
+                "説明は不要です。")})
+            contents.append(content)
+        return self._generate(contents, max_new_tokens=30)
+
+
+def _pil(img: np.ndarray):
+    from PIL import Image
+
+    big = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    return Image.fromarray(cv2.cvtColor(big, cv2.COLOR_BGR2RGB))
 
 
 def create_recognizer(prefer: str | None = None):

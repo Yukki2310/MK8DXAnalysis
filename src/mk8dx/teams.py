@@ -178,3 +178,35 @@ def suggest_by_prefix(images: list, names: list[str], fmt: str) -> Assignment | 
         used.add(key)
         teams.append(Team(tag=label, normalized_tag=key, members=sorted(members)))
     return Assignment(teams=teams, valid=True, warnings=[])
+
+
+def suggest_by_vlm(reader, images: list, fmt: str) -> Assignment | None:
+    """視覚言語モデルに名前画像12枚を見せてチーム分けとタグを推定させる（最後の手段）。
+
+    モデルの答えは検証してから使う: 12人が重複なく、決まった人数ずつの組に分かれていること。
+    """
+    if reader is None or not getattr(reader, "can_suggest_teams", False):
+        return None
+    if len(images) != PLAYERS_PER_RACE or any(im is None for im in images):
+        return None
+    size = FORMATS[fmt]
+    groups = reader.suggest_teams(images, size)
+    if not groups:
+        return None
+    seen: list[int] = []
+    for g in groups:
+        if len(g["members"]) != size:
+            return None
+        seen += g["members"]
+    if sorted(seen) != list(range(PLAYERS_PER_RACE)):
+        return None
+    used: set[str] = set()
+    teams: list[Team] = []
+    for k, g in enumerate(sorted(groups, key=lambda g: min(g["members"])), start=1):
+        label = (g.get("tag") or "").strip().rstrip("#-_.:・ ") or f"チーム{k}"
+        while normalize_name(label) in used:
+            label += "'"
+        used.add(normalize_name(label))
+        teams.append(Team(tag=label, normalized_tag=normalize_name(label),
+                          members=sorted(g["members"])))
+    return Assignment(teams=teams, valid=True, warnings=[])

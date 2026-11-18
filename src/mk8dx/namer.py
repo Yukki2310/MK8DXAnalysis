@@ -67,6 +67,30 @@ class NameReader:
         """1選手あたりに読み取りを行う最大回数（精度の高いエンジンは1回で足りる）。"""
         return int(getattr(self._rec, "max_reads", 3))
 
+    @property
+    def can_suggest_teams(self) -> bool:
+        """画像を見てチーム分け・タグ推定ができるエンジン（視覚言語モデル）か。"""
+        return self.available and hasattr(self._rec, "suggest_teams")
+
+    def suggest_teams(self, images: list[np.ndarray], team_size: int) -> list[dict] | None:
+        if not self.can_suggest_teams:
+            return None
+        try:
+            return self._rec.suggest_teams(
+                [im[:, :NAME_TEXT_WIDTH] for im in images], team_size)
+        except Exception:
+            return None
+
+    def label_teams(self, groups: list[list[np.ndarray]]) -> list[str]:
+        """チームごとの共通タグを画像から読む。できなければ空文字のリスト。"""
+        if not self.can_suggest_teams:
+            return [""] * len(groups)
+        try:
+            cropped = [[im[:, :NAME_TEXT_WIDTH] for im in g] for g in groups]
+            return [clean_text(t) for t in self._rec.label_teams(cropped)]
+        except Exception:
+            return [""] * len(groups)
+
     def read(self, crops: list[np.ndarray]) -> str:
         return self.read_many([crops])[0]
 

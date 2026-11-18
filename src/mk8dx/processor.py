@@ -20,9 +20,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from .clustering import Assignment, assign_teams
-from .teams import group_by_labels, suggest_by_prefix
+from .teams import group_by_labels, suggest_by_prefix, suggest_by_vlm
 from .roster import Observation, Resolution, Roster, encode_thumb
 from .scoring import points_for_rank
+from .tags import normalize_name
 
 UNCERTAIN_COST = 2.0   # 照合コストがこれを超える割り当ては「別人かも」として知らせる
 MAX_CROPS = 3        # 順位ごとに保持する名前クロップの枚数
@@ -242,6 +243,34 @@ class RaceProcessor:
             return ["選手を特定できていない順位があります"]
         return group_by_labels([e.team for e in entries], self.format).warnings
 
+    @staticmethod
+    def _reuse_label(members: list) -> str | None:
+        """チームの選手のうち、すでにタグが付いている人がいれば、そのタグを使う。
+
+        手動で付けたタグを優先し、なければ自動で付けたタグのうち最も多いものを使う。
+        これで、レースごとに名前の読みが少し違っても、タグの表記が揺れて
+        チームが別々に数えられることがない。
+        """
+        manual = [m.team for m in members if m is not None and m.team and m.team_manual]
+        auto = [m.team for m in members if m is not None and m.team and not m.team_manual]
+        for pool in (manual, auto):
+            if pool:
+                return max(set(pool), key=pool.count)
+        return None
+
+    def _name_placeholder_tags(self, guess: Assignment, images: list) -> None:
+        """タグが仮の名前（チームN）のままのチームを、画像からタグを読んで直す。"""
+        if not (hasattr(self.namer, "label_teams") and getattr(self.namer, "can_suggest_teams", False)):
+            return
+        pending = [t for t in guess.teams if t.tag.startswith("チーム")]
+        if not pending:
+            return
+        labels = self.namer.label_teams([[images[i] for i in t.members] for t in pending])
+        for team, label in zip(pending, labels):
+            label = label.strip().rstrip("#-_.:・ ")
+            if label:
+                team.tag, team.normalized_tag = label, normalize_name(label)
+
     def _assign(
         self, resolution: Resolution, consensus: list[Observation]
     ) -> Assignment | None:
@@ -257,17 +286,23 @@ class RaceProcessor:
         if all(e.team for e in entries):  # type: ignore[union-attr]
             return group_by_labels([e.team for e in entries], self.format)  # type: ignore[union-attr]
         names = [e.canonical_name for e in entries]  # type: ignore[union-attr]
-        # まず名前の先頭（タグ）の画像照合、決められなければ文字認識の読みから推定する
-        guess = suggest_by_prefix(
-            [o.image for o in consensus], names, self.format
-        ) or assign_teams(names, self.format)
+        # まず名前の先頭（タグ）の画像照合、決められなければ文字認識の読みから推定する。
+        # それでも決められなければ、視覚言語モデルに名前画像を見せて推定させる。
+        images = [o.image for o in consensus]
+        guess = suggest_by_prefix(images, names, self.format) or assign_teams(names, self.format)
+        if not guess.valid:
+            guess = suggest_by_vlm(self.namer, images, self.format) or guess
         if guess.valid:
+            self._name_placeholder_tags(guess, images)
             had_labels = any(e.team for e in entries)  # type: ignore[union-attr]
             for team in guess.teams:
-                for idx in team.members:
-                    entry = entries[idx]
-                    if entry is not None and not entry.team:
-                        self.roster.set_team(entry.id, team.tag, manual=False)
+                members = [entries[i] for i in team.members]
+                tag = self._reuse_label(members) or team.tag
+                for entry in members:
+                    if entry is not None and (
+                            not entry.team or (not entry.team_manual and entry.team != tag)):
+                        # 未設定の選手と、自動で付けたタグが揺れている選手を、同じ表記にそろえる
+                        self.roster.set_team(entry.id, tag, manual=False)
             if had_labels:
                 # 設定済みの選手が混ざっている場合は、その組み合わせで成立するか検証する
                 return group_by_labels(

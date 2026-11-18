@@ -219,3 +219,85 @@ def test_suggest_teams_uses_ocr_prefix_for_case_differences():
     result = suggest_by_prefix(images, names, "2v2")
     assert result is not None
     assert {tuple(t.members) for t in result.teams} == {(2 * k, 2 * k + 1) for k in range(6)}
+
+
+class FakeVlmNamer:
+    """視覚言語モデルの代わり: 名前は既定、チーム分けとタグは決まった答えを返す。"""
+
+    can_suggest_teams = True
+    max_reads = 1
+
+    def __init__(self, groups, tags=None):
+        self.groups, self.tags = groups, tags or []
+        self.calls = {"suggest": 0, "label": 0}
+
+    def read_many(self, crop_lists):
+        return ["" for _ in crop_lists]
+
+    def suggest_teams(self, images, team_size):
+        self.calls["suggest"] += 1
+        return self.groups
+
+    def label_teams(self, groups):
+        self.calls["label"] += 1
+        return list(self.tags[: len(groups)])
+
+
+def _seeded_unrelated_names(roster):
+    names = [f"{chr(65 + i)}{i}x" for i in range(12)]    # 先頭がすべて違う
+    for n in names:
+        roster.seed(n)
+    return names
+
+
+def test_vlm_fallback_groups_players_when_names_do_not_reveal_teams():
+    roster = Roster()
+    names = _seeded_unrelated_names(roster)
+    groups = [{"tag": f"T{k}", "members": [2 * k, 2 * k + 1]} for k in range(6)]
+    namer = FakeVlmNamer(groups)
+    proc = RaceProcessor(roster, "2v2", assume_closed=True, namer=namer)
+    outcome = proc.process_single(
+        [Observation(name=n, image=_name_image(n)) for n in names], 1)
+    assert namer.calls["suggest"] == 1
+    assert outcome.confirmed
+    assert {tuple(t["members"]) for t in outcome.teams} == {
+        (2 * k + 1, 2 * k + 2) for k in range(6)}
+    assert all(e.team and not e.team_manual for e in roster.entries)
+
+
+def test_vlm_answer_with_wrong_sizes_is_rejected():
+    roster = Roster()
+    names = _seeded_unrelated_names(roster)
+    bad = [{"tag": "T", "members": [0, 1, 2]}] + [
+        {"tag": f"T{k}", "members": [k + 2]} for k in range(1, 10)]
+    proc = RaceProcessor(roster, "2v2", assume_closed=True, namer=FakeVlmNamer(bad))
+    outcome = proc.process_single(
+        [Observation(name=n, image=_name_image(n)) for n in names], 1)
+    assert not outcome.confirmed            # 検証に通らない答えは使わず、画面で設定してもらう
+    assert any("チーム" in p for p in outcome.problems)
+
+
+def test_auto_labels_are_unified_across_races():
+    """名前の読みの揺れでタグが 'FR' と 'FR☆' に割れても、同じ表記にそろえる。"""
+    roster = Roster()
+    names = ["xa", "xb", "FR one", "FR two", "za", "zb", "wa", "wb", "va", "vb", "ua", "ub"]
+    for n in names:
+        roster.seed(n)
+    roster.set_team(3, "FR☆", manual=False)     # 前のレースで自動で付いた表記
+    proc = RaceProcessor(roster, "2v2", assume_closed=True)
+    outcome = proc.process_single([Observation(name=n) for n in names], 2)
+    assert outcome.confirmed
+    fr = [e.team for e in roster.entries if e.canonical_name.startswith("FR")]
+    assert fr == ["FR☆", "FR☆"]
+
+
+def test_manual_tag_wins_over_new_auto_guess():
+    roster = Roster()
+    names = ["xa", "xb", "FR one", "FR two", "za", "zb", "wa", "wb", "va", "vb", "ua", "ub"]
+    for n in names:
+        roster.seed(n)
+    roster.set_team(3, "フレンチ", manual=True)
+    proc = RaceProcessor(roster, "2v2", assume_closed=True)
+    outcome = proc.process_single([Observation(name=n) for n in names], 1)
+    assert outcome.confirmed
+    assert [e.team for e in roster.entries if e.canonical_name.startswith("FR")] == ["フレンチ"] * 2
