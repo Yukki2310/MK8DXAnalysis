@@ -15,11 +15,11 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from . import db
-from .capture import VirtualCamera
+from .capture import VirtualCamera, grab_preview, list_cameras
 from .clustering import assign_teams
 from .ocr import OcrEngine
 from .preprocess import load_roi_config
@@ -41,9 +41,36 @@ _session_id: str | None = None
 _clients: set[WebSocket] = set()
 _lock = asyncio.Lock()
 
-# ロスターはセッションをまたいで保持する（選手登録はマッチごとではなく
+# 選手名簿はセッションをまたいで保持する（選手登録はマッチごとではなく
 # グループ単位の情報のため）。プロセッサは形式が変わったら作り直す。
 _roster = Roster()
+
+
+def _persist_roster() -> None:
+    """選手名簿をDBへ保存する（呼び出しスレッドごとに接続を作る）。"""
+    try:
+        conn = db.connect(DB_PATH)
+        db.save_roster_data(conn, _roster.to_dict())
+        conn.close()
+    except Exception:
+        pass  # 保存に失敗しても処理自体は止めない
+
+
+def _load_persisted_roster() -> None:
+    """前回までの選手名簿（自動構築の結果を含む）を復元する。"""
+    global _roster
+    try:
+        if DB_PATH.exists():
+            conn = db.connect(DB_PATH)
+            data = db.load_roster_data(conn)
+            conn.close()
+            if data:
+                _roster = Roster.from_dict(data)
+    except Exception:
+        pass  # 復元に失敗したら空の名簿から始める
+
+
+_load_persisted_roster()
 _processor: RaceProcessor | None = None
 _processor_format: str | None = None
 
@@ -203,18 +230,30 @@ async def get_roster():
 
 @app.post("/api/roster")
 async def seed_roster(body: dict):
-    """ロスターへ選手を事前登録する（ステップ3の結論: 事前登録が本命）。"""
+    """選手名簿へ選手を事前登録する（ステップ3の結論: 事前登録が本命）。"""
     name = (body.get("name") or "").strip()
     if not name:
         return {"error": "name が空です"}
     entry = _roster.seed(name)
+    _persist_roster()
     return {"id": entry.id, **roster_payload()}
 
 
 @app.delete("/api/roster/{entry_id}")
 async def delete_roster(entry_id: int):
     removed = _roster.remove(entry_id)
+    _persist_roster()
     return {"removed": removed, **roster_payload()}
+
+
+@app.post("/api/roster/{entry_id}/rename")
+async def rename_roster(entry_id: int, body: dict):
+    """自動登録された選手の名前を正しい表記に直す。"""
+    name = (body.get("name") or "").strip()
+    renamed = _roster.rename(entry_id, name)
+    if renamed:
+        _persist_roster()
+    return {"renamed": renamed, **roster_payload()}
 
 
 class SimulateRace(BaseModel):
@@ -224,7 +263,7 @@ class SimulateRace(BaseModel):
 
 @app.post("/api/simulate_race")
 async def simulate_race(body: SimulateRace):
-    """カメラなし検証用（ロスター照合あり）: 生の名前12名を投入し、
+    """カメラなし検証用（選手名簿照合あり）: 生の名前12名を投入し、
     名寄せ→チーム判定→集計を通す。確定できないレースは
     AWAITING_REVIEW として警告し、結果は is_valid=False で保存する。"""
     global _match, _pending_review
@@ -238,6 +277,7 @@ async def simulate_race(body: SimulateRace):
         [Observation(name=n) for n in body.names], race_number
     )
     race_result_id = save_outcome(conn, _session_id, outcome)
+    _persist_roster()
     _match.on_result_candidate()
     _match.on_screen_stable()
     _match.on_processing_done(valid=outcome.confirmed)
@@ -250,7 +290,7 @@ async def simulate_race(body: SimulateRace):
             "teams": outcome.teams,
         }
         await alert(
-            "ロスター照合で要確認のレースがあります",
+            "選手名簿との照合で要確認のレースがあります",
             {"problems": outcome.problems, "race_number": race_number},
         )
     await broadcast_state()
@@ -301,6 +341,7 @@ def _on_runner_event(loop: asyncio.AbstractEventLoop):
             asyncio.run_coroutine_threadsafe(
                 alert(payload.get("message", ""), payload), loop
             )
+        _persist_roster()  # レース確定のたびに名簿の学習結果を保存する
         asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
 
     return callback
@@ -326,10 +367,16 @@ async def live_start(body: dict):
         try:
             ocr = OcrEngine()
             roi = load_roi_config(str(BASE_DIR / "config" / "roi_1080p.json"))
+            # 本登録の名簿がある場合は closed（消去法あり）、無い場合は
+            # open で名簿を自動構築する（登録なし運用）
+            has_confirmed = any(e.confirmed for e in _roster.entries)
+            processor = RaceProcessor(
+                _roster, _match.format, assume_closed=has_confirmed  # type: ignore[union-attr]
+            )
             runner = LiveRunner(
                 roi=roi,
                 ocr=ocr,
-                processor=_get_processor(_match.format),  # type: ignore[union-attr]
+                processor=processor,
                 match=_match,  # type: ignore[arg-type]
                 conn=conn,
                 session_id=_session_id,  # type: ignore[arg-type]
@@ -360,6 +407,38 @@ async def live_start(body: dict):
 async def live_stop():
     _live_stop.set()
     return {"ok": True}
+
+
+@app.get("/api/cameras")
+async def cameras():
+    """利用可能なカメラの一覧（番号と解像度）。
+
+    OpenCV ではデバイス名が取れないため、識別はプレビュー画像で
+    行う。ライブ実行中はカメラを掴んでいるため列挙できない。
+    """
+    if _live_status["running"]:
+        return JSONResponse(
+            {"error": "ライブ実行中はカメラ一覧を取得できません"},
+            status_code=409,
+        )
+    found = await asyncio.to_thread(list_cameras)
+    return {"cameras": found}
+
+
+@app.get("/api/cameras/{index}/preview")
+async def camera_preview(index: int):
+    """カメラのプレビュー画像（JPEG）を返す。"""
+    if _live_status["running"]:
+        return JSONResponse(
+            {"error": "ライブ実行中はプレビューを取得できません"},
+            status_code=409,
+        )
+    data = await asyncio.to_thread(grab_preview, index)
+    if data is None:
+        return JSONResponse(
+            {"error": f"カメラ {index} を開けませんでした"}, status_code=404
+        )
+    return Response(content=data, media_type="image/jpeg")
 
 
 @app.get("/api/live/status")

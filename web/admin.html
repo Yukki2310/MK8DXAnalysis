@@ -31,6 +31,14 @@
 </section>
 
 <section>
+  <h2>カメラソース</h2>
+  <p>番号だけでは判別できないため、一覧のプレビュー映像を見てOBS仮想カメラを選んでください（ライブ実行中は一覧を取得できません）。</p>
+  <button id="camList">ソース一覧を取得</button>
+  <span id="camNote"></span>
+  <div id="camGrid" style="display:flex; flex-wrap:wrap; gap:12px; margin-top:8px"></div>
+</section>
+
+<section>
   <h2>ライブ（OBS仮想カメラ）</h2>
   デバイス番号: <input id="liveDevice" type="number" value="0" min="0" style="width:60px">
   <button id="liveStart">開始</button>
@@ -39,8 +47,8 @@
 </section>
 
 <section>
-  <h2>ロスター（選手の事前登録）</h2>
-  <p>対戦する12名を登録しておくと、OCRの読みを名寄せして集計します（推奨の運用）。同名の選手は2回登録してください。国旗はレース中の自動学習でひも付きます。</p>
+  <h2>選手名簿（事前登録）</h2>
+  <p>事前登録なしでも、レースを重ねると自動で名簿が構築されます（内容は保存され、再起動しても残ります）。手動で登録しておくと初回から精度が上がります。同名の選手は2回登録してください。国旗はレース中の自動学習でひも付きます。自動登録された選手の名前が違う場合は「名前を変更」で正しい表記に直してください（別人として増えてしまった場合は片方を削除してください）。</p>
   <input id="rosterName" placeholder="選手名（タグ込み）" size="32">
   <button id="rosterAdd">登録する</button>
   <table><thead><tr><th>ID</th><th>名前</th><th>状態</th><th>出現レース</th><th>国旗</th><th></th></tr></thead>
@@ -68,7 +76,7 @@
 </section>
 
 <section>
-  <h2>検証用: リザルト投入（ロスター照合あり）</h2>
+  <h2>検証用: リザルト投入（選手名簿照合あり）</h2>
   <p>OCRで読んだままの名前12名（順位順、カンマ区切り）を投入し、名寄せ→集計を通します。確定できない場合は警告に理由が出ます。</p>
   <textarea id="raceNames" rows="2">XI c.qq,FR,racist #1,Xb,RR,FRFlowx,Aかぜんだかいとしき,AA,XIavalon,今ねえあまあ!,日日-,-</textarea>
   <button id="simulateRace">照合して投入する</button>
@@ -120,6 +128,36 @@
       alertsEl.textContent = msg.message + '\n' + JSON.stringify(msg.detail, null, 2);
     }
   };
+  document.getElementById('camList').onclick = async () => {
+    const note = document.getElementById('camNote');
+    const grid = document.getElementById('camGrid');
+    note.textContent = '取得中...';
+    grid.innerHTML = '';
+    const res = await fetch('/api/cameras');
+    const data = await res.json();
+    if (data.error) { note.textContent = data.error; return; }
+    if (!data.cameras.length) { note.textContent = '利用可能なカメラが見つかりませんでした'; return; }
+    note.textContent = `${data.cameras.length}件のソースが見つかりました。プレビューをクリックすると選択されます`;
+    for (const cam of data.cameras) {
+      const card = document.createElement('div');
+      card.style.cssText = 'border:2px solid #444; border-radius:8px; padding:6px; cursor:pointer; width:256px';
+      const img = document.createElement('img');
+      img.src = `/api/cameras/${cam.index}/preview?t=${Date.now()}`;
+      img.style.cssText = 'width:100%; display:block; background:#000';
+      img.alt = `カメラ ${cam.index}`;
+      const label = document.createElement('div');
+      label.textContent = `デバイス ${cam.index}（${cam.width}×${cam.height}）`;
+      card.appendChild(img);
+      card.appendChild(label);
+      card.onclick = () => {
+        document.getElementById('liveDevice').value = cam.index;
+        for (const c of grid.children) c.style.borderColor = '#444';
+        card.style.borderColor = '#4caf50';
+        note.textContent = `デバイス ${cam.index} を選択しました`;
+      };
+      grid.appendChild(card);
+    }
+  };
   document.getElementById('liveStart').onclick = async () => {
     await fetch('/api/live/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ device_index: parseInt(document.getElementById('liveDevice').value, 10) || 0 }) });
@@ -145,12 +183,22 @@
       tr.innerHTML = `<td>${e.id}</td><td>${e.name}</td><td>${e.confirmed ? '本登録' : '仮登録'}</td>` +
         `<td>${e.races_seen}</td><td>${e.has_flag ? 'あり' : 'なし'}</td>`;
       const td = document.createElement('td');
+      const renameBtn = document.createElement('button');
+      renameBtn.textContent = '名前を変更';
+      renameBtn.onclick = async () => {
+        const name = prompt('正しい名前を入力してください', e.name);
+        if (!name || !name.trim()) return;
+        const res = await fetch(`/api/roster/${e.id}/rename`, { method: 'POST',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: name.trim() }) });
+        renderRoster((await res.json()).entries);
+      };
       const btn = document.createElement('button');
       btn.textContent = '削除';
       btn.onclick = async () => {
         const res = await fetch(`/api/roster/${e.id}`, { method: 'DELETE' });
         renderRoster((await res.json()).entries);
       };
+      td.appendChild(renameBtn);
       td.appendChild(btn);
       tr.appendChild(td);
       rosterBody.appendChild(tr);

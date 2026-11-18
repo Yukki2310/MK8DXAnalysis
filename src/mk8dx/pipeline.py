@@ -146,7 +146,7 @@ def verify_result_candidate(
 def extract_observations(
     frame: np.ndarray, roi: dict, ocr: OcrEngine
 ) -> list[Observation]:
-    """フェーズAフレームからロスター照合用の観測（名前＋国旗署名）を抽出する。
+    """フェーズAフレームから選手名簿照合用の観測（名前＋国旗署名）を抽出する。
 
     RaceProcessor.add_frame に渡すための橋渡し。名前は
     analyze_result_frame と同じ読み方（日英デュアルエンジン）をし、

@@ -163,7 +163,7 @@ class LiveRunner:
         else:
             self.pending = PendingReview(race_result_id, outcome)
             self._emit("alert", {
-                "message": "ロスター照合で要確認のレースがあります",
+                "message": "選手名簿との照合で要確認のレースがあります",
                 "problems": outcome.problems,
                 "race_number": outcome.race_index,
             })
@@ -202,7 +202,7 @@ class LiveRunner:
         self._emit("cross_check", {"problems": problems})
 
     def _resolve_standings(self, reading: StandingsReading) -> StandingsReading:
-        """照合用にフェーズBの名前をロスターで名寄せする（学習なし）。"""
+        """照合用にフェーズBの名前を選手名簿で名寄せする（学習なし）。"""
         observations = [Observation(name=e["name"]) for e in reading.entries]
         resolution = self.processor.roster.resolve(observations)
         names = self.processor.roster.resolved_names(resolution)
