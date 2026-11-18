@@ -29,6 +29,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .identity import (
+    SAME_THRESHOLD as IMAGE_SAME,
+    mask_from_dict,
+    mask_to_dict,
+    prepare_mask,
+    prepared_distance,
+)
 from .tags import normalize_name
 
 # --- 国旗署名 ---
@@ -62,6 +69,16 @@ _CONFUSION_PAIRS = {
         ("ー", "-"),
     ]
 }
+
+# --- 画像ベース識別（identity.py、フェーズ1）---
+# 文字マスク距離をコストへ換算する倍率。距離0.4以上でUNASSIGNED_COST(4.0)
+# に達し「新規プレイヤー」になる。OCR名のコストは同点時の微調整に使うだけ。
+IMAGE_COST_SCALE = 10.0
+IMAGE_NAME_TIEBREAK = 0.03
+IMAGE_NAME_TIEBREAK_CAP = 5.0
+MASK_EXEMPLARS = 4          # エントリごとに保持するマスク見本の最大数
+MASK_NEW_DIVERSITY = 0.04   # これ未満の距離の見本は追加しない（重複回避）
+MASK_POISON_LIMIT = 0.3     # これを超えて違うマスクは取り込まない
 
 # --- 割り当て ---
 UNASSIGNED_COST = 4.0     # このコストのダミー枠に落ちたら未割り当て
@@ -272,6 +289,8 @@ class Observation:
 
     name: str
     flag: np.ndarray | None = None
+    # 名前の文字マスク（identity.trim_mask の出力）。あれば画像照合を使う
+    mask: np.ndarray | None = None
 
 
 @dataclass
@@ -287,6 +306,27 @@ class RosterEntry:
     last_seen_race: int = -1
     pinned_name: str | None = None  # 事前登録された正規名（多数決で変えない）
     co_seen: set[int] = field(default_factory=set)  # 同じレースに同時出現した相手のID
+    masks: list[np.ndarray] = field(default_factory=list)  # 文字マスク見本
+    _prepared: list[np.ndarray] = field(default_factory=list, repr=False)
+
+    def add_mask(self, mask: np.ndarray) -> bool:
+        """見本を追加する。重複・毒入れ・上限超えは追加しない。"""
+        if len(self.masks) >= MASK_EXEMPLARS:
+            return False
+        prepared = prepare_mask(mask)
+        if self._prepared:
+            d = min(prepared_distance(prepared, p) for p in self._prepared)
+            if d < MASK_NEW_DIVERSITY or d > MASK_POISON_LIMIT:
+                return False
+        self.masks.append(mask)
+        self._prepared.append(prepared)
+        return True
+
+    def image_distance(self, prepared_obs: np.ndarray | None) -> float | None:
+        """観測マスク(prepare済み)と見本の最小距離。比較不能なら None。"""
+        if prepared_obs is None or not self._prepared:
+            return None
+        return min(prepared_distance(prepared_obs, p) for p in self._prepared)
 
     def to_dict(self) -> dict:
         return {
@@ -301,6 +341,7 @@ class RosterEntry:
             "last_seen_race": self.last_seen_race,
             "pinned_name": self.pinned_name,
             "co_seen": sorted(self.co_seen),
+            "masks": [mask_to_dict(m) for m in self.masks],
         }
 
     @classmethod
@@ -317,6 +358,8 @@ class RosterEntry:
         entry.last_seen_race = int(data.get("last_seen_race", -1))
         entry.pinned_name = data.get("pinned_name")
         entry.co_seen = {int(x) for x in data.get("co_seen", [])}
+        entry.masks = [mask_from_dict(m) for m in data.get("masks", [])]
+        entry._prepared = [prepare_mask(m) for m in entry.masks]
         return entry
 
     @property
@@ -330,10 +373,11 @@ class RosterEntry:
         """
         if self.pinned_name:
             return self.pinned_name
-        if not self.variants:
-            return ""
+        names = {k: v for k, v in self.variants.items() if k}
+        if not names:
+            return f"選手{self.id}" if self.masks else ""
         return max(
-            self.variants.items(),
+            names.items(),
             key=lambda kv: (
                 kv[1],
                 any(c in SYMBOL_CHARS for c in kv[0]),
@@ -376,9 +420,12 @@ class Roster:
     def _new_provisional(self, obs: Observation) -> RosterEntry:
         entry = RosterEntry(id=self._next_id, confirmed=False)
         self._next_id += 1
-        entry.variants[obs.name] = 1
+        if obs.name:
+            entry.variants[obs.name] = 1
         if obs.flag is not None:
             entry.flag_signatures.append(obs.flag)
+        if obs.mask is not None:
+            entry.add_mask(obs.mask)
         self.entries.append(entry)
         return entry
 
@@ -434,15 +481,32 @@ class Roster:
         matrix: list[list[float]] = []
         for obs in observations:
             row: list[float] = []
+            prepared_obs = prepare_mask(obs.mask)
+            img_dist: dict[int, float | None] = {}
             for e in slots:
-                c = name_cost(obs.name, e.canonical_name)
-                # 名前が完全一致する場合は国旗で覆さない（ステップ7
-                # 検証: 抽出ノイズで国旗ペナルティがかかり、同チームの
-                # 'racist #1' が '#2' に化けた）。国旗が要るのは同名の
-                # 別人同士の区別だが、その場合は名前コストが両方とも
-                # 0で、どの枠に入っても表示名は同じになる。
-                if c > 0:
-                    c += _flag_adjustment(obs.flag, e)
+                if e.id not in img_dist:
+                    img_dist[e.id] = e.image_distance(prepared_obs)
+                d = img_dist[e.id]
+                if d is not None:
+                    # 画像で比較できる: 文字マスク距離が主、OCR名は同点時のみ
+                    nc = (
+                        min(name_cost(obs.name, e.canonical_name),
+                            IMAGE_NAME_TIEBREAK_CAP)
+                        if obs.name else 0.0
+                    )
+                    c = d * IMAGE_COST_SCALE + IMAGE_NAME_TIEBREAK * nc
+                    # 同じ文字（同名の別人）同士は国旗で区別する
+                    if d < IMAGE_SAME:
+                        c += _flag_adjustment(obs.flag, e)
+                else:
+                    c = name_cost(obs.name, e.canonical_name)
+                    # 名前が完全一致する場合は国旗で覆さない（ステップ7
+                    # 検証: 抽出ノイズで国旗ペナルティがかかり、同チームの
+                    # 'racist #1' が '#2' に化けた）。国旗が要るのは同名の
+                    # 別人同士の区別だが、その場合は名前コストが両方とも
+                    # 0で、どの枠に入っても表示名は同じになる。
+                    if c > 0:
+                        c += _flag_adjustment(obs.flag, e)
                 if not e.confirmed:
                     c += PROVISIONAL_PENALTY
                 row.append(c)
@@ -487,7 +551,10 @@ class Roster:
             if entry is None:
                 continue
             obs = observations[r]
-            entry.variants[obs.name] += 1
+            if obs.name:
+                entry.variants[obs.name] += 1
+            if obs.mask is not None:
+                entry.add_mask(obs.mask)
             per_entry_rows[entry_id] += 1
             if obs.flag is not None:
                 flags_by_entry.setdefault(entry_id, []).append(obs.flag)
@@ -532,7 +599,7 @@ class Roster:
         new_ids: list[int] = []
         for r in resolution.new_candidates:
             obs = observations[r]
-            if _is_name_like(obs.name):
+            if obs.mask is not None or _is_name_like(obs.name):
                 entry = self._new_provisional(obs)
                 entry.races_seen = 1
                 entry.last_seen_race = race_index
@@ -563,7 +630,13 @@ class Roster:
                 for b in self.entries[i + 1:]:
                     if b.id in a.co_seen or a.id in b.co_seen:
                         continue
-                    if name_cost(a.canonical_name, b.canonical_name) > MERGE_MAX_COST:
+                    if a._prepared and b._prepared:
+                        # 画像で比較できる組は画像だけで同一判定する
+                        d = min(prepared_distance(pa, pb)
+                                for pa in a._prepared for pb in b._prepared)
+                        if d > IMAGE_SAME:
+                            continue
+                    elif name_cost(a.canonical_name, b.canonical_name) > MERGE_MAX_COST:
                         continue
                     if a.flag_signatures and b.flag_signatures:
                         d = min(
@@ -592,6 +665,8 @@ class Roster:
                 break
             if all(flag_distance(sig, s) > 0.02 for s in keep.flag_signatures):
                 keep.flag_signatures.append(sig)
+        for m in drop.masks:
+            keep.add_mask(m)
         keep.capacity = max(keep.capacity, drop.capacity)
         keep.races_seen += drop.races_seen
         keep.last_seen_race = max(keep.last_seen_race, drop.last_seen_race)

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .clustering import Assignment, assign_teams
+from .identity import extract_name_mask, trim_mask
 from .ocr import OcrEngine, parse_points_text
 from .preprocess import crop_rows, edge_density
 from .roster import Observation, extract_flag_signature
@@ -160,7 +161,10 @@ def extract_observations(
         if regions and "name" in regions:
             name, _ = ocr.recognize_name(regions["name"])
         flag = extract_flag_signature(frame, roi, rank)
-        observations.append(Observation(name=name, flag=flag))
+        mask = None
+        if regions and "name" in regions:
+            mask = trim_mask(extract_name_mask(regions["name"]))
+        observations.append(Observation(name=name, flag=flag, mask=mask))
     return observations
 
 

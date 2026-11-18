@@ -65,6 +65,7 @@ class RaceProcessor:
         self._votes: list[Counter] = []       # 順位ごとの名前投票
         self._last_seen: list[dict[str, int]] = []  # 順位ごとの最終観測フレーム
         self._flags: list = []                # 順位ごとの国旗署名（最初の有効値）
+        self._masks: list = []                # 順位ごとの文字マスク（最新の有効値）
         self._frames_seen = 0
         self._last_signature: tuple | None = None
         self._stable_count = 0
@@ -75,6 +76,7 @@ class RaceProcessor:
         self._votes = [Counter() for _ in range(12)]
         self._last_seen = [dict() for _ in range(12)]
         self._flags = [None] * 12
+        self._masks = [None] * 12
         self._frames_seen = 0
         self._last_signature = None
         self._stable_count = 0
@@ -90,6 +92,8 @@ class RaceProcessor:
             self._last_seen[i][obs.name] = self._frames_seen
             if self._flags[i] is None and obs.flag is not None:
                 self._flags[i] = obs.flag
+            if obs.mask is not None:
+                self._masks[i] = obs.mask
         self._frames_seen += 1
         signature = self._trial_signature()
         if signature is not None and signature == self._last_signature:
@@ -122,7 +126,8 @@ class RaceProcessor:
                 )[0]
             else:
                 name = ""
-            out.append(Observation(name=name, flag=self._flags[i]))
+            out.append(Observation(name=name, flag=self._flags[i],
+                                   mask=self._masks[i]))
         return out
 
     def _trial_signature(self) -> tuple | None:
