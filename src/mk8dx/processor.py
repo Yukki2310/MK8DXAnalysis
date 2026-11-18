@@ -1,7 +1,7 @@
 """レース処理の統合（ステップ4で実装、docs/step4-notes.md 参照）。
 
 フェーズA（ゴール順画面）が表示されている間、複数フレームの観測を
-蓄積し、安定したところでロスター照合→チーム判定→集計までを行う。
+蓄積し、安定したところで選手名簿照合→チーム判定→集計までを行う。
 
 - フレームごとに名前の読みは揺れるため、順位ごとに多数決で
   コンセンサス観測を作る。
@@ -136,16 +136,33 @@ class RaceProcessor:
 
     # -- 確定 ------------------------------------------------------
     def finalize(self, *, force: bool = False) -> RaceOutcome:
-        """蓄積した観測を確定処理する（ロスター学習はここで1回だけ）。"""
+        """蓄積した観測を確定処理する（選手名簿学習はここで1回だけ）。"""
         if self._race_index is None:
             raise RuntimeError("begin_race を先に呼んでください")
         if not self.ready and not force:
             raise RuntimeError("観測が安定していません（force=True で強制確定）")
         consensus = self.consensus()
+        ids_before = {e.id for e in self.roster.entries}
         resolution = self.roster.resolve_race(
             consensus, self._race_index, assume_closed=self.assume_closed
         )
-        return self._build_outcome(consensus, resolution)
+        new_ids = {e.id for e in self.roster.entries} - ids_before
+        if new_ids:
+            # 学習で新規エントリができた行は、作られた名簿に対して
+            # もう一度照合し直すと名前が引ける（登録なし運用の初回
+            # レースでも集計できるようにするため）。学習は済んでいる
+            # ので、ここでの照合は学習なしの純粋な解決だけを行う。
+            resolution = self.roster.resolve(
+                consensus, assume_closed=self.assume_closed
+            )
+        outcome = self._build_outcome(consensus, resolution)
+        if new_ids:
+            outcome.problems.append(
+                f"選手名簿に新規の選手が{len(new_ids)}名登録されました"
+                "（自動登録の内容を確認してください）"
+            )
+            outcome.status = "awaiting_review"
+        return outcome
 
     def process_single(self, observations: list[Observation],
                        race_index: int) -> RaceOutcome:
@@ -165,7 +182,7 @@ class RaceProcessor:
             rank = i + 1
             if resolved[i] is None:
                 problems.append(
-                    f"{rank}位の名前をロスターと照合できませんでした: {obs.name!r}"
+                    f"{rank}位の名前を選手名簿と照合できませんでした: {obs.name!r}"
                 )
             if resolution.low_confidence[i]:
                 problems.append(

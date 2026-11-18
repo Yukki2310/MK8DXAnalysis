@@ -1,6 +1,6 @@
-"""ロスター照合（ステップ3で実装、docs/step3-notes.md 参照）。
+"""選手名簿照合（ステップ3で実装、docs/step3-notes.md 参照）。
 
-リザルト画面のOCR読み（名前＋国旗）を、正規名簿（ロスター）の
+リザルト画面のOCR読み（名前＋国旗）を、正規名簿（選手名簿）の
 エントリへ名寄せする。単一フレームの生OCRは記号欠落や文字化けが
 多く、そのままではクラスタリング（接頭辞の完全一致前提）が成立
 しないため、この層で吸収する。
@@ -10,14 +10,14 @@
   区別し、国旗まで同じ場合は1エントリに「容量（最大同時出現数）」
   を持たせて複数行への割り当てを許す（同名＝同タグ＝同チームなので
   集計に影響しない）。
-- 名寄せは行ごとの最近傍ではなく、12行×ロスタースロットの一括
+- 名寄せは行ごとの最近傍ではなく、12行×選手名簿スロットの一括
   割り当て（ハンガリアン法）で総コスト最小にする。個別に決めると
   'RR'（★欠落）が 'FR' に吸着するような局所的な誤りが起きるが、
   全体最適では FR 枠を本物の FR が取るため RR は RR★ 枠に回る。
 - コストは重み付き編集距離。ステップ2で観測した系統的誤り
   （記号の欠落は安い、既知の混同ペアは安い、タグ先頭の相違は高い）
   を織り込む。国旗が一致/不一致ならボーナス/ペナルティを加える。
-- 割り当て結果はロスター学習に使う: 観測表記の多数決で正規名を
+- 割り当て結果は選手名簿学習に使う: 観測表記の多数決で正規名を
   更新し、国旗署名を蓄積し、容量を観測最大に合わせる。未割り当ての
   行は新規エントリ候補（仮登録）になり、複数レースで再見したら
   本登録になる。低信頼の埋め合わせ割り当ては学習に使わない。
@@ -48,6 +48,7 @@ SYMBOL_SUB_COST = 0.6
 BASE_EDIT_COST = 1.0
 FIRST_CHAR_PENALTY = 1.2
 FRAGMENT_PENALTY_PER_CHAR = 0.8
+SHORT_NAME_SURCHARGE = 1.0
 # ステップ2の実データで観測した混同ペア（正規化後の文字同士）
 _CONFUSION_PAIRS = {
     frozenset(pair)
@@ -66,6 +67,25 @@ _CONFUSION_PAIRS = {
 UNASSIGNED_COST = 4.0     # このコストのダミー枠に落ちたら未割り当て
 PROVISIONAL_PENALTY = 0.4  # 仮登録エントリへの割り当ては少し割高にする
 NEW_ENTRY_MIN_LEN = 2      # これより短い観測名は新規登録しない（ゴミ読み対策）
+MERGE_MAX_COST = 0.75      # これ以下で似たエントリは統合候補（同時出現した組は除く）
+PRUNE_AFTER_RACES = 3      # 仮登録がこのレース数現れなければ除去する
+
+_NAME_LIKE = None  # 遅延コンパイルする正規表現（_is_name_like 参照）
+
+
+def _is_name_like(name: str) -> bool:
+    """新規登録に値する読みか（記号だけのゴミ読みを弾く）。
+
+    英数字・かな・漢字のいずれかを含み、空白を除いて2文字以上ある
+    ことを要求する。'-' や '!!' のような読みは選手名簿に残さない。
+    """
+    global _NAME_LIKE
+    if _NAME_LIKE is None:
+        import re
+
+        _NAME_LIKE = re.compile(r"[0-9A-Za-zぁ-んァ-ヶ一-龥]")
+    compact = _compact(name)
+    return len(compact) >= NEW_ENTRY_MIN_LEN and bool(_NAME_LIKE.search(compact))
 
 
 def extract_flag_signature(frame: np.ndarray, roi: dict, rank: int) -> np.ndarray | None:
@@ -113,18 +133,18 @@ def flag_distance(a: np.ndarray, b: np.ndarray) -> float:
 def _flag_adjustment(obs_flag: np.ndarray | None, entry: "RosterEntry") -> float:
     """観測国旗とエントリ国旗の一致度によるコスト補正。
 
-    ボーナスは署名が1つでもあれば適用する。一方ペナルティは
-    本登録エントリにだけ適用する: 仮登録エントリの国旗は単一の
-    ノイズ混じり抽出から学んだだけのことがあり、それを根拠に
-    名前が一致する行を弾くと照合全体が崩れる（ステップ3検証で
-    実測した失敗パターン）。
+    ボーナス・ペナルティとも本登録エントリにだけ適用する:
+    仮登録エントリの国旗は単一のノイズ混じり抽出から学んだだけの
+    ことがあり、文字化けした名前の仮登録が国旗ボーナスで別人の行を
+    奪う事故が起きる（ステップ3検証の「三日」エントリが典型）。
+    仮登録の国旗は、本登録になった時点から効き始める。
     """
-    if obs_flag is None or not entry.flag_signatures:
+    if obs_flag is None or not entry.flag_signatures or not entry.confirmed:
         return 0.0
     d = min(flag_distance(obs_flag, s) for s in entry.flag_signatures)
     if d < FLAG_SAME_THRESHOLD:
         return FLAG_BONUS
-    if d > FLAG_DIFF_THRESHOLD and entry.confirmed:
+    if d > FLAG_DIFF_THRESHOLD:
         return FLAG_PENALTY
     return 0.0
 
@@ -182,6 +202,12 @@ def name_cost(observed: str, canonical: str) -> float:
     # 短い正規名を奪ってしまう（ステップ4検証で実測）。不足分を足す。
     if len(a) * 2 < len(b):
         cost += (len(b) - len(a)) * FRAGMENT_PENALTY_PER_CHAR
+    # 短い名前の弱い一致への加算: 2文字同士の名前は置換2回でも
+    # コストが低くなり、無関係な短い正規名に吸着する（ステップ6
+    # 検証で 'AA' が '三日' に吸着した実測）。完全一致や記号欠落
+    # レベルの強い一致には加算しない。
+    if min(len(a), len(b)) <= 2 and cost >= 1.5:
+        cost += SHORT_NAME_SURCHARGE
     return cost
 
 
@@ -250,7 +276,7 @@ class Observation:
 
 @dataclass
 class RosterEntry:
-    """ロスターの1エントリ（名前×国旗で識別される選手）。"""
+    """選手名簿の1エントリ（名前×国旗で識別される選手）。"""
 
     id: int
     variants: Counter = field(default_factory=Counter)  # 観測表記 -> 回数
@@ -260,6 +286,38 @@ class RosterEntry:
     races_seen: int = 0
     last_seen_race: int = -1
     pinned_name: str | None = None  # 事前登録された正規名（多数決で変えない）
+    co_seen: set[int] = field(default_factory=set)  # 同じレースに同時出現した相手のID
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "variants": dict(self.variants),
+            "flag_signatures": [
+                [round(float(x), 4) for x in sig] for sig in self.flag_signatures
+            ],
+            "capacity": self.capacity,
+            "confirmed": self.confirmed,
+            "races_seen": self.races_seen,
+            "last_seen_race": self.last_seen_race,
+            "pinned_name": self.pinned_name,
+            "co_seen": sorted(self.co_seen),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "RosterEntry":
+        entry = cls(id=int(data["id"]))
+        entry.variants = Counter(data.get("variants", {}))
+        entry.flag_signatures = [
+            np.array(sig, dtype=np.float32)
+            for sig in data.get("flag_signatures", [])
+        ]
+        entry.capacity = int(data.get("capacity", 1))
+        entry.confirmed = bool(data.get("confirmed", False))
+        entry.races_seen = int(data.get("races_seen", 0))
+        entry.last_seen_race = int(data.get("last_seen_race", -1))
+        entry.pinned_name = data.get("pinned_name")
+        entry.co_seen = {int(x) for x in data.get("co_seen", [])}
+        return entry
 
     @property
     def canonical_name(self) -> str:
@@ -332,6 +390,21 @@ class Roster:
                 return True
         return False
 
+    def rename(self, entry_id: int, name: str) -> bool:
+        """エントリの正規名を人が直す（自動構築後の手直し用）。
+
+        人が確認した名前なので固定名（pinned）にし、本登録扱いに
+        する。国旗や出現履歴は引き継がれるため、削除して登録し直す
+        より安全に名簿を整えられる。
+        """
+        entry = self._entry_by_id(entry_id)
+        if entry is None or not name.strip():
+            return False
+        entry.pinned_name = name.strip()
+        entry.variants[entry.pinned_name] += 2
+        entry.confirmed = True
+        return True
+
     def _entry_by_id(self, entry_id: int) -> RosterEntry | None:
         for e in self.entries:
             if e.id == entry_id:
@@ -348,11 +421,11 @@ class Roster:
 
     def resolve(self, observations: list[Observation], *,
                 assume_closed: bool = False) -> Resolution:
-        """観測12行をロスターへ一括割り当てする。
+        """観測12行を選手名簿へ一括割り当てする。
 
-        assume_closed=True のときは「参加者はロスター全員」という
+        assume_closed=True のときは「参加者は選手名簿全員」という
         前提で、未割り当ての行と空き枠を埋め合わせる（低信頼として
-        記録し、学習には使わない）。事前登録済みロスターでの運用向け。
+        記録し、学習には使わない）。事前登録済み選手名簿での運用向け。
         """
         n = len(observations)
         slots = self._slots()
@@ -398,7 +471,7 @@ class Roster:
     # -- 学習 ------------------------------------------------------
     def learn(self, observations: list[Observation], resolution: Resolution,
               race_index: int) -> None:
-        """割り当て結果をロスターに反映する（多数決・容量・国旗）。"""
+        """割り当て結果を選手名簿に反映する（多数決・容量・国旗）。"""
         per_entry_rows: Counter = Counter()
         for r, entry_id in enumerate(resolution.entry_ids):
             if entry_id is None or resolution.low_confidence[r]:
@@ -428,12 +501,110 @@ class Roster:
             if entry is not None and count > entry.capacity:
                 entry.capacity = count
         # 未割り当て行は新規プレイヤー候補として仮登録する
+        new_ids: list[int] = []
         for r in resolution.new_candidates:
             obs = observations[r]
-            if len(_compact(obs.name)) >= NEW_ENTRY_MIN_LEN:
+            if _is_name_like(obs.name):
                 entry = self._new_provisional(obs)
                 entry.races_seen = 1
                 entry.last_seen_race = race_index
+                new_ids.append(entry.id)
+        # 同時出現の記録: このレースで直接割り当てられた組と新規組は
+        # 「別々の行にいた」ので別人同士。以後の統合判定で使う
+        present = {eid for eid in per_entry_rows} | set(new_ids)
+        for eid in present:
+            entry = self._entry_by_id(eid)
+            if entry is not None:
+                entry.co_seen |= present - {eid}
+        self._merge_duplicates()
+        self._prune_stale(race_index)
+
+    def _merge_duplicates(self) -> None:
+        """同一人物らしい重複エントリを統合する（自動構築の掃除）。
+
+        条件: 正規名のコストが MERGE_MAX_COST 以下で、国旗が矛盾せず、
+        かつ同じレースに同時出現したことがない組だけを統合する。
+        同時出現した組は別人確定なので、コストが低くても統合しない
+        （例: 'racist #1' と 'racist #2' は混同ペアでコストが低いが
+        常に同時出現するため統合されない）。
+        """
+        changed = True
+        while changed:
+            changed = False
+            for i, a in enumerate(self.entries):
+                for b in self.entries[i + 1:]:
+                    if b.id in a.co_seen or a.id in b.co_seen:
+                        continue
+                    if name_cost(a.canonical_name, b.canonical_name) > MERGE_MAX_COST:
+                        continue
+                    if a.flag_signatures and b.flag_signatures:
+                        d = min(
+                            flag_distance(sa, sb)
+                            for sa in a.flag_signatures
+                            for sb in b.flag_signatures
+                        )
+                        if d > FLAG_DIFF_THRESHOLD:
+                            continue  # 国旗が違う＝同名の別人
+                    keep, drop = self._stronger(a, b)
+                    self._absorb(keep, drop)
+                    changed = True
+                    break
+                if changed:
+                    break
+
+    @staticmethod
+    def _stronger(a: RosterEntry, b: RosterEntry) -> tuple[RosterEntry, RosterEntry]:
+        key = lambda e: (e.races_seen, e.confirmed, -e.id)  # noqa: E731
+        return (a, b) if key(a) >= key(b) else (b, a)
+
+    def _absorb(self, keep: RosterEntry, drop: RosterEntry) -> None:
+        keep.variants.update(drop.variants)
+        for sig in drop.flag_signatures:
+            if len(keep.flag_signatures) >= 8:
+                break
+            if all(flag_distance(sig, s) > 0.02 for s in keep.flag_signatures):
+                keep.flag_signatures.append(sig)
+        keep.capacity = max(keep.capacity, drop.capacity)
+        keep.races_seen += drop.races_seen
+        keep.last_seen_race = max(keep.last_seen_race, drop.last_seen_race)
+        keep.confirmed = keep.confirmed or drop.confirmed
+        if keep.pinned_name is None:
+            keep.pinned_name = drop.pinned_name
+        keep.co_seen = (keep.co_seen | drop.co_seen) - {keep.id, drop.id}
+        for e in self.entries:
+            if drop.id in e.co_seen:
+                e.co_seen.discard(drop.id)
+                if e.id != keep.id:
+                    e.co_seen.add(keep.id)
+        self.entries.remove(drop)
+
+    def _prune_stale(self, race_index: int) -> None:
+        """長く現れない仮登録を除去する（1回きりの文字化け対策）。
+
+        本登録と事前登録（pinned）は除去しない。離脱した選手が
+        戻ってきた場合は、新規の仮登録として作り直される。
+        """
+        self.entries = [
+            e for e in self.entries
+            if e.confirmed
+            or e.pinned_name is not None
+            or e.races_seen > 1
+            or race_index - e.last_seen_race < PRUNE_AFTER_RACES
+        ]
+
+    # -- 永続化 ------------------------------------------------------
+    def to_dict(self) -> dict:
+        return {
+            "next_id": self._next_id,
+            "entries": [e.to_dict() for e in self.entries],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Roster":
+        roster = cls()
+        roster.entries = [RosterEntry.from_dict(d) for d in data.get("entries", [])]
+        roster._next_id = int(data.get("next_id", len(roster.entries) + 1))
+        return roster
 
     def resolve_race(self, observations: list[Observation], race_index: int, *,
                      assume_closed: bool = False) -> Resolution:

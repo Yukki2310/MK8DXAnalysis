@@ -12,6 +12,48 @@ import cv2
 import numpy as np
 
 
+def list_cameras(max_index: int = 8) -> list[dict]:
+    """利用可能なカメラを列挙する（番号・解像度）。
+
+    OpenCV にはデバイス名の取得手段がないため、識別は解像度と
+    プレビュー画像で行う（管理画面でプレビューを確認する想定）。
+    開けない番号は一覧に含めない。
+    """
+    found: list[dict] = []
+    for index in range(max_index):
+        cap = cv2.VideoCapture(index)
+        try:
+            if not cap.isOpened():
+                continue
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            h, w = frame.shape[:2]
+            found.append({"index": index, "width": int(w), "height": int(h)})
+        finally:
+            cap.release()
+    return found
+
+
+def grab_preview(index: int) -> bytes | None:
+    """カメラのプレビュー画像（JPEGバイト列）を1枚取得する。"""
+    cap = cv2.VideoCapture(index)
+    try:
+        if not cap.isOpened():
+            return None
+        frame = None
+        for _ in range(5):  # 露出が落ち着くまで数フレーム読み捨てる
+            ok, f = cap.read()
+            if ok:
+                frame = f
+        if frame is None:
+            return None
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        return buf.tobytes() if ok else None
+    finally:
+        cap.release()
+
+
 class VirtualCamera:
     def __init__(self, device_index: int = 0, width: int = 1920, height: int = 1080):
         self.device_index = device_index

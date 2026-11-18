@@ -50,6 +50,36 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def save_roster_data(conn: sqlite3.Connection, data: dict) -> None:
+    """選手名簿（自動構築の結果を含む）を丸ごと保存する。"""
+    import json
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS roster_store ("
+        " id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO roster_store (id, data) VALUES (1, ?)"
+        " ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+        (json.dumps(data, ensure_ascii=False),),
+    )
+    conn.commit()
+
+
+def load_roster_data(conn: sqlite3.Connection) -> dict | None:
+    import json
+
+    try:
+        row = conn.execute(
+            "SELECT data FROM roster_store WHERE id = 1"
+        ).fetchone()
+    except Exception:
+        return None  # テーブル未作成（初回起動時）
+    if row is None:
+        return None
+    return json.loads(row[0])
+
+
 def create_session(conn: sqlite3.Connection, fmt: str, total_races: int = 12) -> str:
     session_id = uuid.uuid4().hex
     conn.execute(
