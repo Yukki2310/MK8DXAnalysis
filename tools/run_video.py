@@ -40,7 +40,7 @@ def main() -> None:
     roi = load_roi_config(ROOT / "config" / "roi_1080p.json")
     roster = Roster()
     namer = NameReader()
-    print("名前OCR:", "Windows OCR" if namer.available else "なし（仮名）")
+    print("名前OCR:", "PP-OCRv5" if namer.available else "なし（仮名）")
     tmp = tempfile.mkdtemp()
     conn = db.connect(Path(tmp) / "run.db")
     session_id = db.create_session(conn, args.format, 12)

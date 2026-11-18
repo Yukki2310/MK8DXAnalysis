@@ -11,3 +11,4 @@ build/
 dist/
 .venv-build/
 *.egg-info/
+assets/models/

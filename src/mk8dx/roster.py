@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 
+import base64
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -106,6 +107,20 @@ def _is_name_like(name: str) -> bool:
         _NAME_LIKE = re.compile(r"[0-9A-Za-zぁ-んァ-ヶ一-龥]")
     compact = _compact(name)
     return len(compact) >= NEW_ENTRY_MIN_LEN and bool(_NAME_LIKE.search(compact))
+
+
+THUMB_WIDTH = 365  # 名前の文字領域の幅（これより右は国旗）
+
+
+def encode_thumb(image: np.ndarray | None) -> bytes | None:
+    """名前行クロップをJPEGに圧縮する（名簿に保存する小さな見本画像）。"""
+    if image is None:
+        return None
+    import cv2
+
+    ok, buf = cv2.imencode(".jpg", image[:, :THUMB_WIDTH],
+                           [cv2.IMWRITE_JPEG_QUALITY, 88])
+    return buf.tobytes() if ok else None
 
 
 def extract_flag_signature(frame: np.ndarray, roi: dict, rank: int) -> np.ndarray | None:
@@ -313,6 +328,7 @@ class RosterEntry:
     co_seen: set[int] = field(default_factory=set)  # 同じレースに同時出現した相手のID
     masks: list[np.ndarray] = field(default_factory=list)  # 文字マスク見本
     name_reads: int = 0        # 表示名を文字認識で読んだ回数（上限あり）
+    thumb: bytes | None = None  # 名前行の実画像（JPEG）。管理画面で誰か見分ける用
     team: str | None = None    # チーム名（表示・集計用）。None は未設定
     team_manual: bool = False  # 人が設定したか（False は自動推定）
     _prepared: list[np.ndarray] = field(default_factory=list, repr=False)
@@ -353,6 +369,7 @@ class RosterEntry:
             "name_reads": self.name_reads,
             "team": self.team,
             "team_manual": self.team_manual,
+            "thumb": base64.b64encode(self.thumb).decode("ascii") if self.thumb else None,
         }
 
     @classmethod
@@ -370,6 +387,7 @@ class RosterEntry:
         entry.pinned_name = data.get("pinned_name")
         entry.co_seen = {int(x) for x in data.get("co_seen", [])}
         entry.name_reads = int(data.get("name_reads", 0))
+        entry.thumb = base64.b64decode(data["thumb"]) if data.get("thumb") else None
         entry.team = data.get("team")
         entry.team_manual = bool(data.get("team_manual", False))
         entry.masks = [mask_from_dict(m) for m in data.get("masks", [])]
@@ -442,6 +460,7 @@ class Roster:
             entry.flag_signatures.append(obs.flag)
         if obs.mask is not None:
             entry.add_mask(obs.mask)
+        entry.thumb = encode_thumb(obs.image)
         self.entries.append(entry)
         return entry
 
@@ -505,8 +524,18 @@ class Roster:
         self._absorb(b, a)
         return True
 
+    def image_for(self, entry_id: int) -> tuple[bytes, str] | None:
+        """選手の名前の画像と MIME。実画像があればそれ、無ければ文字マスクの画像。"""
+        entry = self._entry_by_id(entry_id)
+        if entry is None:
+            return None
+        if entry.thumb:
+            return entry.thumb, "image/jpeg"
+        png = self.mask_png(entry_id)
+        return (png, "image/png") if png else None
+
     def mask_png(self, entry_id: int) -> bytes | None:
-        """選手の名前の文字画像（管理画面で誰か見分けるための表示用PNG）。"""
+        """選手の名前の文字マスクの画像（実画像が無いときの代替PNG）。"""
         import cv2
 
         entry = self._entry_by_id(entry_id)
@@ -622,6 +651,9 @@ class Roster:
                 entry.variants[obs.name] += 1
             if obs.mask is not None:
                 entry.add_mask(obs.mask)
+            # 実画像は最初の数レースの安定したフレームで更新する（読み取りが良くなる）
+            if obs.image is not None and (entry.thumb is None or entry.races_seen < 2):
+                entry.thumb = encode_thumb(obs.image) or entry.thumb
             per_entry_rows[entry_id] += 1
             if obs.flag is not None:
                 flags_by_entry.setdefault(entry_id, []).append(obs.flag)

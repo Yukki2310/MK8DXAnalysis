@@ -4,11 +4,6 @@ opencv-python-headless>=4.9
 fastapi>=0.110
 uvicorn>=0.29
 websockets>=12.0
-# Windows 標準OCR（新規選手の名前提案に使用。無くても動く）
-winrt-runtime>=2.0; sys_platform == "win32"
-winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
-winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
-winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
-winrt-Windows.Globalization>=2.0; sys_platform == "win32"
-winrt-Windows.Foundation>=2.0; sys_platform == "win32"
-winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"
+# 名前の文字認識（PP-OCRv5 認識モデルを ONNX Runtime で実行）
+rapidocr>=3.0
+onnxruntime>=1.18

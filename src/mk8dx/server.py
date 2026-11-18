@@ -104,7 +104,8 @@ def _roster_payload(in_match: set[int]) -> list[dict]:
             "team": e.team,
             "team_auto": bool(e.team) and not e.team_manual,
             "races_seen": e.races_seen,
-            "has_image": bool(e.masks),
+            "has_image": bool(e.thumb or e.masks),
+            "image_v": len(e.thumb) if e.thumb else 0,
             "in_match": e.id in in_match,
         }
         for e in _roster.entries
@@ -243,11 +244,12 @@ async def review_discard():
 async def roster_image(entry_id: int):
     """選手の名前の文字画像（誰のことか見分けるための表示用）。"""
     with _lock:
-        data = _roster.mask_png(entry_id)
-    if data is None:
+        found = _roster.image_for(entry_id)
+    if found is None:
         return Response(status_code=404)
-    return Response(content=data, media_type="image/png",
-                    headers={"Cache-Control": "max-age=3600"})
+    data, mime = found
+    return Response(content=data, media_type=mime,
+                    headers={"Cache-Control": "max-age=600"})
 
 
 @app.post("/api/roster/{entry_id}/rename")
@@ -338,7 +340,7 @@ async def live_start(body: dict):
         conn = db.connect(DB_PATH)
         try:
             namer = NameReader()
-            _live_status["name_ocr"] = "windows-ocr" if namer.available else "none"
+            _live_status["name_ocr"] = "rapidocr" if namer.available else "none"
             roi = load_roi_config(str(ROI_PATH))
             # 確定した選手がいれば「全員そろっている」前提で消去法も使い、
             # いなければ名簿を自動構築する
@@ -351,6 +353,7 @@ async def live_start(body: dict):
                 roi=roi, ocr=None, processor=processor, match=match,
                 conn=conn, session_id=session_id,
                 on_event=_on_runner_event(loop),
+                screenshot_dir=data_dir() / "screenshots",
             )
             _runner = runner
             cam = VirtualCamera(device_index)

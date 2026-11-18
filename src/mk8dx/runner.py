@@ -46,7 +46,8 @@ from .state import MatchState, Phase
 
 
 def save_outcome(
-    conn, session_id: str, outcome: RaceOutcome
+    conn, session_id: str, outcome: RaceOutcome,
+    screenshot_path: str | None = None,
 ) -> int:
     """RaceOutcome を DB に保存し、race_result_id を返す。
 
@@ -74,6 +75,7 @@ def save_outcome(
     return db.save_race_result(
         conn, session_id, outcome.race_index, entries,
         is_valid=outcome.confirmed,
+        screenshot_path=screenshot_path,
     )
 
 
@@ -92,6 +94,8 @@ class LiveRunner:
     conn: object
     session_id: str
     on_event: Callable[[str, dict], None] | None = None
+    # リザルト画面の保存先フォルダ（読み取りの確認・不具合報告用）。None なら保存しない
+    screenshot_dir: object = None
     # 差し替え可能にしてテストではフェイクを使う
     # None のときは既定の判別（_default_classify: 加算表示の有無と累計の並び）
     classify_fn: Callable | None = None
@@ -162,7 +166,9 @@ class LiveRunner:
             return
         self.match.on_screen_stable()
         outcome = self.processor.finalize()
-        race_result_id = save_outcome(self.conn, self.session_id, outcome)
+        race_result_id = save_outcome(
+            self.conn, self.session_id, outcome,
+            screenshot_path=self._save_screenshot(frame, outcome.race_index))
         self.last_outcome = outcome
         self.match.on_processing_done(valid=outcome.confirmed, now=now)
         if outcome.confirmed:
@@ -175,6 +181,22 @@ class LiveRunner:
                 "race_number": outcome.race_index,
             })
         self._emit("state", {})
+
+    def _save_screenshot(self, frame: np.ndarray, race_index: int) -> str | None:
+        if self.screenshot_dir is None:
+            return None
+        try:
+            from pathlib import Path
+
+            import cv2
+
+            folder = Path(self.screenshot_dir) / self.session_id
+            folder.mkdir(parents=True, exist_ok=True)
+            path = folder / f"race{race_index:02d}.jpg"
+            cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+            return str(path)
+        except Exception:
+            return None  # 保存に失敗しても集計は止めない
 
     def _cooldown_step(self, frame: np.ndarray, now: float) -> None:
         if (

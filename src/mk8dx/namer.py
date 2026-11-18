@@ -4,37 +4,17 @@
 「新しく現れた選手に表示名の初期値を付ける」ためだけに使う。読みが
 ずれても管理画面で直せば固定される（Roster.rename）。
 
-入力は名前行クロップ。identity.extract_name_mask で文字だけを取り出し、
-白地に黒字へ反転して2倍に拡大すると Windows OCR の認識が安定する
-（実測 2026-11-18: 生画像より英字の読みが良い）。日本語エンジンと英語
-エンジンの結果から候補を選び、複数クロップがあれば多数決する。
+入力は名前行クロップ（生の画像）。複数のクロップを読み、信頼度つきで
+多数決する。
 """
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import defaultdict
 
-import cv2
 import numpy as np
 
-from .identity import extract_name_mask
-
-_CJK = re.compile(r"[ぁ-んァ-ヶ一-龥ー]")
-_KANA = re.compile(r"[ぁ-んァ-ヶ]")
-_ASCII_WORD = re.compile(r"[0-9A-Za-z]{2,}")
-
-
-def prepare_for_ocr(name_region: np.ndarray) -> np.ndarray | None:
-    """名前クロップを OCR 用画像（白地黒字・2倍）にする。文字が無ければ None。"""
-    mask = extract_name_mask(name_region)
-    ys, xs = np.where(mask > 0)
-    if len(xs) < 40:
-        return None
-    mask = mask[max(ys.min() - 6, 0): ys.max() + 7,
-                max(xs.min() - 10, 0): xs.max() + 11]
-    img = cv2.resize(255 - mask * 255, None, fx=2, fy=2,
-                     interpolation=cv2.INTER_CUBIC)
-    return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+NAME_TEXT_WIDTH = 365  # 名前の文字領域の幅（これより右は国旗）
 
 
 def clean_text(text: str) -> str:
@@ -47,51 +27,31 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
-def choose_candidate(candidates: list[str]) -> str:
-    """[日本語エンジン, 英語エンジン] の読みから1つ選ぶ。
-
-    日本語エンジンの読みに仮名が含まれるなら日本語名とみなして採用する
-    （漢字だけでは判断しない: 'xı' を '刈' と誤読する例があった）。
-    それ以外は、英語エンジンが英数字2文字以上を読めていればそれを採用し、
-    無ければ日本語側（漢字だけの名前など）を使う。
-    """
-    cleaned = [clean_text(c) for c in candidates]
-    ja = cleaned[0] if cleaned else ""
-    en = cleaned[1] if len(cleaned) > 1 else ""
-    if ja and _KANA.search(ja):
-        return ja
-    if en and _ASCII_WORD.search(en):
-        return en
-    return ja or en
-
-
 class NameReader:
-    """Windows OCR で名前行クロップ群から表示名を読む。"""
+    """名前行クロップ群から表示名を読む。"""
 
-    def __init__(self, ocr=None) -> None:
-        if ocr is None:
-            from .winocr import WindowsOcr
+    def __init__(self, recognizer=None) -> None:
+        if recognizer is None:
+            from .textrec import NameRecognizer
 
-            ocr = WindowsOcr()
-            ocr.load()
-        self._ocr = ocr
+            recognizer = NameRecognizer()
+            recognizer.load()
+        self._rec = recognizer
 
     @property
     def available(self) -> bool:
-        return bool(getattr(self._ocr, "available", False))
+        return bool(getattr(self._rec, "available", False))
 
     def read(self, crops: list[np.ndarray]) -> str:
-        """複数クロップの読みを多数決して返す。読めなければ空文字。"""
+        """複数クロップの読みを、信頼度の合計が最大のものに決めて返す。"""
         if not self.available:
             return ""
-        votes: Counter = Counter()
+        votes: dict[str, float] = defaultdict(float)
         for crop in crops:
-            prepared = prepare_for_ocr(crop)
-            if prepared is None:
-                continue
-            text = choose_candidate(self._ocr.recognize(prepared))
+            text, score = self._rec.recognize(crop[:, :NAME_TEXT_WIDTH])
+            text = clean_text(text)
             if text:
-                votes[text] += 1
+                votes[text] += max(score, 0.01)
         if not votes:
             return ""
-        return votes.most_common(1)[0][0]
+        return max(votes.items(), key=lambda kv: kv[1])[0]

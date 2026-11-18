@@ -46,7 +46,20 @@ def selfcheck() -> int:
         problems.append(f"サーバーの読み込み: {exc}")
     from .namer import NameReader
 
-    print("名前OCR(Windows):", "利用可" if NameReader().available else "利用不可（仮名で動作）")
+    reader = NameReader()
+    ocr_ok = False
+    if reader.available and cv2 is not None:
+        import numpy as np
+
+        probe = np.full((72, 365, 3), 40, np.uint8)
+        cv2.putText(probe, "Racer", (10, 50), cv2.FONT_HERSHEY_DUPLEX, 1.2,
+                    (255, 255, 255), 2)
+        ocr_ok = bool(reader.read([probe]))
+    print("名前の文字認識:", "利用可" if ocr_ok else "利用不可（仮名で動作）")
+    if not ocr_ok:
+        problems.append("文字認識モデルを実行できません")
+    if not resource_path("assets/models/ch_PP-OCRv5_rec_mobile.onnx").exists():
+        problems.append("文字認識モデル(assets/models)がありません")
     for p in problems:
         print("NG:", p)
     print("selfcheck:", "NG" if problems else "OK")

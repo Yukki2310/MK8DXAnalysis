@@ -1,11 +1,11 @@
 # PyInstaller spec（onedir）。ビルド: installer/build.ps1
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 ROOT = SPECPATH + "/.."
 
 hidden = (
     collect_submodules("uvicorn")
-    + collect_submodules("winrt")
+    + collect_submodules("rapidocr")
     + ["websockets", "mk8dx.server"]
 )
 
@@ -16,7 +16,7 @@ a = Analysis(
         (ROOT + "/web", "web"),
         (ROOT + "/config", "config"),
         (ROOT + "/assets", "assets"),
-    ],
+    ] + collect_data_files("rapidocr", excludes=["models/*"]),
     hiddenimports=hidden,
     excludes=["paddle", "paddleocr", "paddlex", "torch", "tensorflow",
               "matplotlib", "pandas", "scipy", "tkinter", "pytest"],

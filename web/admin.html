@@ -102,7 +102,7 @@
   td.race { text-align: right; color: var(--sub); font-size: 13px; padding: 8px 4px; }
 
   /* 選手 */
-  .pimg { width: 150px; height: 42px; object-fit: contain; background: #28303f; border-radius: 6px; display: block; }
+  .pimg { width: 230px; height: 46px; object-fit: contain; background: #28303f; border-radius: 6px; display: block; }
   .pimg.none { display: flex; align-items: center; justify-content: center; color: #9aa6bd; font-size: 12px; }
   .players { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
   .player { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fafbfe; }
@@ -426,7 +426,7 @@ function setTeam(id) { return (v) => api('POST', `/api/roster/${id}/team`, { tea
 
 function pImage(p) {
   return p && p.has_image
-    ? h('img', { class: 'pimg', src: `/api/roster/${p.id}/image`, alt: 'ゲーム画面の名前' })
+    ? h('img', { class: 'pimg', src: `/api/roster/${p.id}/image?v=${p.image_v}`, alt: 'ゲーム画面の名前' })
     : h('div', { class: 'pimg none', text: '（画像なし）' });
 }
 
@@ -533,7 +533,7 @@ function updatePlayerCard(card, p, all) {
   card.querySelector('.badge')?.remove();
   if (p.team_auto) card.querySelectorAll('.fields label')[1].append(h('span', { class: 'badge', text: '自動' }));
   const wrap = card.querySelector('.pimgwrap');
-  const src = p.has_image ? `/api/roster/${p.id}/image` : '';
+  const src = p.has_image ? `/api/roster/${p.id}/image?v=${p.image_v}` : '';
   if (wrap.dataset.src !== src) { wrap.dataset.src = src; wrap.replaceChildren(pImage(p)); }
   const sel = card.querySelector('.mergeSel');
   if (document.activeElement !== sel) {

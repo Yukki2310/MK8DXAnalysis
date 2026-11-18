@@ -14,6 +14,8 @@ if (-not (Test-Path ".venv-build")) {
 $py = ".venv-build\Scripts\python.exe"
 & $py -m pip install -q -r requirements.txt pyinstaller
 & $py -m pip install -q -e . --no-deps
+# 文字認識モデルを assets\models に用意する（初回のみネットワークが必要）
+& $py toolsetch_models.py
 
 & $py -m PyInstaller installer\mk8dx.spec --noconfirm --distpath dist --workpath build
 

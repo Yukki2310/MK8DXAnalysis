@@ -138,8 +138,9 @@ class RaceProcessor:
                 )[0]
             else:
                 name = ""
+            image = self._crops[i][-1] if self._crops[i] else None
             out.append(Observation(name=name, flag=self._flags[i],
-                                   mask=self._masks[i]))
+                                   mask=self._masks[i], image=image))
         return out
 
     def _trial_signature(self) -> tuple | None:

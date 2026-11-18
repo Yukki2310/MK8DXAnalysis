@@ -22,6 +22,8 @@ import numpy as np
 NAME_TEXT_WIDTH = 365
 # 同一人物とみなす距離の上限。実測の同一人物 ≤0.2 / 別人 ≥0.2(酷似)〜0.6。
 SAME_THRESHOLD = 0.12
+# 行の文字として必要な、局所的な明るさのピーク（これ未満は文字なしの行）
+MIN_TEXT_PEAK = 45
 # マスクが小さすぎる（文字が抽出できていない）行は比較不能とする
 MIN_MASK_PIXELS = 40
 NO_MATCH = 9.0
@@ -35,38 +37,84 @@ def is_highlight_row(row: np.ndarray) -> bool:
 
 
 def _remove_noise(mask: np.ndarray) -> np.ndarray:
-    """行の上下端に接する成分（区切り線・隣の行の欠片）と極小成分を除く。
+    """文字ではない成分を除く。
 
+    - 行の上下端に接する成分（区切り線・隣の行の欠片）と極小成分
+    - 背景の明るい細い横線（幅が広く高さが小さい成分）
+    - 文字の帯（字形らしい大きさの成分が占める縦範囲）から外れた成分
     これらが外接矩形を広げると、同じ名前でも距離が大きくなる
-    （実フレームで 'xi avalon' が隣接フレームと 0.85 になった原因）。
-    文字は行の中央にあり上下端に接しないので、安全に除去できる。
+    （実フレームで同じ 'xi c.qq' が 0.85 になった原因）。
     """
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
     h = mask.shape[0]
     keep = np.zeros(n, dtype=bool)
+    glyph_like = np.zeros(n, dtype=bool)
     for i in range(1, n):
         x, y, w, hh, area = stats[i]
-        if area >= 6 and y > 0 and y + hh < h:
-            keep[i] = True
+        if area < 6 or y == 0 or y + hh >= h:
+            continue
+        if w >= 80 and hh <= 4:
+            continue
+        keep[i] = True
+        glyph_like[i] = hh >= 8 and area >= 20
+    if glyph_like.any():
+        top = min(stats[i][1] for i in range(1, n) if glyph_like[i])
+        bottom = max(stats[i][1] + stats[i][3] for i in range(1, n) if glyph_like[i])
+        for i in range(1, n):
+            if keep[i] and not glyph_like[i]:
+                cy = stats[i][1] + stats[i][3] / 2
+                if cy < top - 6 or cy > bottom + 6:
+                    keep[i] = False
     return keep[labels].astype(np.uint8)
 
 
 def extract_name_mask(name_region: np.ndarray) -> np.ndarray:
-    """名前領域(BGR)から文字の二値マスク(uint8, 0/1)を取り出す。"""
-    return _remove_noise(_raw_name_mask(name_region))
+    """名前領域(BGR)から文字の二値マスク(uint8, 0/1)を取り出す。
 
-
-def _raw_name_mask(name_region: np.ndarray) -> np.ndarray:
+    文字の色は行によって逆になる: 通常は白文字、自分の行（黄色のバー）は
+    暗い灰色の文字。背景が明るい（黄土色・白っぽいコース）と通常の行でも
+    平均輝度が高くなるため、輝度だけで極性を決めると誤る。そこで白文字用と
+    暗文字用の両方で抽出し、「面積が大きく成分が少ない」（=文字らしい）方を
+    採用する。
+    """
     c = name_region[:, :NAME_TEXT_WIDTH]
-    if is_highlight_row(c):
-        # 暗い文字 on 黄色地: 局所的に背景より暗い画素を文字とする
-        g = c.max(axis=2)
-        bg = cv2.morphologyEx(g, cv2.MORPH_CLOSE, _KERNEL15)
-        return (cv2.subtract(bg, g) >= 45).astype(np.uint8)
-    # 白文字: 全チャンネルが明るい（min チャンネル）かつ局所的に明るい
+    candidates = [_remove_noise(_white_text_mask(c)), _remove_noise(_dark_text_mask(c))]
+    # 同程度の品質なら、黄色の行は暗文字・それ以外は白文字という事前知識を使う
+    prior = 1 if is_highlight_row(c) else 0
+
+    def quality(mask: np.ndarray) -> float:
+        n, _ = cv2.connectedComponents(mask, connectivity=8)
+        return float(mask.sum()) / n  # n は背景を含むので 1 + 成分数
+
+    scores = [quality(m) for m in candidates]
+    scores[prior] *= 1.15
+    return candidates[int(np.argmax(scores))]
+
+
+def _dark_text_mask(c: np.ndarray) -> np.ndarray:
+    """暗い文字 on 明るい地（黄色のバー）: 局所的に背景より暗い画素。"""
+    g = c.max(axis=2)
+    bg = cv2.morphologyEx(g, cv2.MORPH_CLOSE, _KERNEL15)
+    return (cv2.subtract(bg, g) >= 45).astype(np.uint8)
+
+
+def _white_text_mask(c: np.ndarray) -> np.ndarray:
+    # 白文字: 全チャンネルが明るい（min チャンネル）かつ局所的に明るい。
+    # 文字の明るさは映像ごとに違う（圧縮やぼけで灰白色になる）ため、固定の
+    # しきい値ではなく「その行の文字の明るさ」に合わせたヒステリシス二値化にする。
     g = c.min(axis=2)
     bg = cv2.morphologyEx(g, cv2.MORPH_OPEN, _KERNEL15)
-    return ((g >= 190) & (cv2.subtract(g, bg) >= 50)).astype(np.uint8)
+    th = cv2.subtract(g, bg)
+    peak = float(np.percentile(th, 99.7))
+    if peak < MIN_TEXT_PEAK:
+        return np.zeros_like(g, dtype=np.uint8)
+    low = (th >= max(0.30 * peak, 22)) & (g >= 100)
+    high = th >= 0.55 * peak
+    n, labels = cv2.connectedComponents(low.astype(np.uint8), connectivity=8)
+    seeds = np.unique(labels[high & low])
+    keep = np.zeros(n, dtype=bool)
+    keep[seeds[seeds > 0]] = True
+    return keep[labels].astype(np.uint8)
 
 
 def trim_mask(mask: np.ndarray) -> np.ndarray | None:
