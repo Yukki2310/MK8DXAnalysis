@@ -9,4 +9,7 @@ rapidocr>=3.0
 onnxruntime>=1.18
 # タスクトレイ（インストーラ版）
 pystray>=0.19
+# カメラの名前の取得（デバイスを開かずに一覧を出す）
+pygrabber>=0.2
+comtypes>=1.4
 pillow>=10.0

@@ -18,7 +18,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
 from . import db, standings
-from .capture import VirtualCamera, grab_preview, list_cameras
+from .capture import VirtualCamera, find_index_by_name, grab_preview, list_cameras
 from .clustering import FORMATS
 from .namer import NameReader
 from .paths import data_dir, resource_path
@@ -341,11 +341,10 @@ def _on_runner_event(loop: asyncio.AbstractEventLoop):
 
 
 def _friendly_error(exc: Exception, device_index: int) -> str:
-    if isinstance(exc, RuntimeError) and "開けません" in str(exc):
-        return (
-            f"カメラ（番号 {device_index}）を開けませんでした。"
-            "OBSで「仮想カメラ開始」を押してから、映像を選び直してください。"
-        )
+    if isinstance(exc, RuntimeError) and "開けませんでした" in str(exc):
+        return "映像を開けません。他のアプリが使用中の可能性があります"
+    if isinstance(exc, RuntimeError) and "途切れ" in str(exc):
+        return "映像が途切れました"
     return f"予期しないエラーが起きました: {exc}"
 
 
@@ -359,6 +358,11 @@ async def live_start(body: dict):
             _new_match(body.get("format", "2v2"))
     assert _match is not None and _session_id is not None
     device_index = int(body.get("device_index", 0))
+    # 番号はデバイスの抜き差しで変わるので、選んだ映像の名前があれば名前から探し直す
+    if body.get("device_name"):
+        found = await asyncio.to_thread(find_index_by_name, str(body["device_name"]))
+        if found is not None:
+            device_index = found
     loop = asyncio.get_running_loop()
     _live_stop.clear()
     _live_status.update({"running": True, "error": None})
@@ -395,7 +399,7 @@ async def live_start(body: dict):
             asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
             try:
                 last_push = 0.0
-                for frame in cam.frames_at_interval(0.4):
+                for frame in cam.frames_at_interval(0.4, stop=_live_stop):
                     if _live_stop.is_set():
                         break
                     with _lock:

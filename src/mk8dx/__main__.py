@@ -94,7 +94,17 @@ def main() -> None:
                         help="コンソールの代わりにタスクトレイから操作する（インストーラ版の既定）")
     parser.add_argument("--selfcheck", action="store_true",
                         help="同梱リソースと依存の読み込みを確認して終了する")
+    # 内部用: カメラの確認を別プロセスで行う（応答しないデバイスでアプリ本体が固まらないため）
+    parser.add_argument("--camera-worker", choices=["names", "probe"], help=argparse.SUPPRESS)
+    parser.add_argument("--index", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--out", help=argparse.SUPPRESS)
+    parser.add_argument("--preview", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.camera_worker:
+        from .capture import camera_worker
+
+        camera_worker(args.camera_worker, args.index, args.out, args.preview)
+        return
     if args.selfcheck:
         raise SystemExit(selfcheck())
 

@@ -9,6 +9,7 @@ import sys
 hidden = (
     collect_submodules("uvicorn")
     + collect_submodules("rapidocr")
+    + collect_submodules("pygrabber") + collect_submodules("comtypes")
     + ["websockets", "mk8dx.server"]
 )
 extra_datas = []

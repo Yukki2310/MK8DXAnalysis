@@ -16,6 +16,8 @@ dependencies = [
     "rapidocr>=3.0",
     "onnxruntime>=1.18",
     "pystray>=0.19",
+    "pygrabber>=0.2",
+    "comtypes>=1.4",
     "pillow>=10.0",
 ]
 

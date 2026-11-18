@@ -110,6 +110,9 @@
   .cam { border: 3px solid var(--line); border-radius: 11px; overflow: hidden; cursor: pointer; }
   .cam img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #111; }
   .cam .cap { padding: 4px 8px; font-size: 13px; display: flex; justify-content: space-between; }
+  .cam.busy { opacity: .7; cursor: not-allowed; }
+  .cam .ph { aspect-ratio: 16/9; background: #2a3142; color: #aeb7cc; display: flex; align-items: center; justify-content: center; font-weight: 800; }
+  .cam .nm { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cam.sel { border-color: var(--green); } .cam.sel .cap { background: var(--green-bg); color: var(--green); font-weight: 800; }
   #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 50; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .toast { background: #1b2333; color: #fff; padding: 8px 16px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.25); font-weight: 700; }
@@ -427,31 +430,47 @@ function renderPlayers(s) {
 // ---------- 映像・開始・メニュー ----------
 function renderCams() {
   const box = $('#cams');
-  box.replaceChildren(...(cameras || []).map((c) => h('div',
-    { class: 'cam' + (String(c.index) === selectedCam ? ' sel' : ''),
-      onclick: () => { selectedCam = String(c.index); LS.set('cam', selectedCam); $('#camDlg').close(); if (state) renderHeader(state); } },
-    h('img', { src: `/api/cameras/${c.index}/preview?t=${Date.now()}`, alt: '' }),
-    h('div', { class: 'cap' }, h('span', { text: `映像 ${c.index + 1}` }), h('span', { text: `${c.width}×${c.height}` })))));
-  if (cameras && !cameras.length) box.replaceChildren(h('div', { class: 'dim', text: '映像が見つかりません（OBSの仮想カメラを開始してください）' }));
+  if (cameras === null) { box.replaceChildren(h('div', { class: 'dim', text: '探しています…' })); return; }
+  if (!cameras.length) { box.replaceChildren(h('div', { class: 'dim', text: '映像が見つかりません' })); return; }
+  box.replaceChildren(...cameras.map((c) => {
+    const busy = c.state !== 'ok';
+    return h('div',
+      { class: 'cam' + (String(c.index) === selectedCam ? ' sel' : '') + (busy ? ' busy' : ''),
+        onclick: () => {
+          if (busy) { toast('使用中です（OBSなどが使っています）', 'error'); return; }
+          selectedCam = String(c.index); LS.set('cam', selectedCam); LS.set('camName', c.name);
+          $('#camDlg').close();
+        } },
+      busy ? h('div', { class: 'ph', text: '使用中' })
+           : h('img', { src: `/api/cameras/${c.index}/preview?t=${Date.now()}`, alt: '' }),
+      h('div', { class: 'cap' }, h('span', { class: 'nm', title: c.name, text: c.name }),
+        h('span', { text: busy ? '' : `${c.width}×${c.height}` })));
+  }));
 }
 async function findCameras() {
   $('#camRefresh').disabled = true;
+  cameras = null; renderCams();
   try {
     const res = await fetch('/api/cameras');
-    if (res.status === 409) return;
+    if (res.status === 409) { cameras = []; renderCams(); return; }
     const data = await res.json();
     cameras = data.cameras || [];
-    if (selectedCam !== '' && !cameras.some((c) => String(c.index) === selectedCam)) selectedCam = '';
-    renderCams(); if (state) renderHeader(state);
-  } catch { toast('接続できません', 'error'); } finally { $('#camRefresh').disabled = false; }
+    // 番号は変わることがあるので、前回選んだ映像は名前で探し直す
+    const name = LS.get('camName', '');
+    const byName = name ? cameras.find((c) => c.name === name && c.state === 'ok') : null;
+    if (byName) selectedCam = String(byName.index);
+    else if (selectedCam !== '' && !cameras.some((c) => String(c.index) === selectedCam && c.state === 'ok')) selectedCam = '';
+    LS.set('cam', selectedCam);
+    renderCams();
+  } catch { toast('接続できません', 'error'); cameras = []; renderCams(); } finally { $('#camRefresh').disabled = false; }
 }
-async function openCams() { $('#camDlg').showModal(); renderCams(); if (cameras === null) await findCameras(); }
+async function openCams() { $('#camDlg').showModal(); await findCameras(); }
 
 async function start() {
   if (selectedCam === '') { await openCams(); return; }
   const fmt = state && state.match ? state.match.format : LS.get('fmt', '2v2');
   if (!state.match) await api('POST', '/api/session', { format: fmt });
-  await api('POST', '/api/live/start', { device_index: Number(selectedCam) });
+  await api('POST', '/api/live/start', { device_index: Number(selectedCam), device_name: LS.get('camName', '') });
 }
 async function chooseFormat(fmt) {
   if (state.live && state.live.running) return;
@@ -509,7 +528,7 @@ $('#copyUrl').onclick = async () => {
 $('#optPos').value = LS.get('opt.pos', 'tr'); $('#optBig').value = LS.get('opt.big', 'left'); $('#optSize').value = LS.get('opt.size', 'm');
 $('#optPos').onchange = $('#optBig').onchange = $('#optSize').onchange = updateOverlayUrl;
 window.addEventListener('resize', fitPreview);
-updateOverlayUrl(); fitPreview(); connect(); findCameras();
+updateOverlayUrl(); fitPreview(); connect();
 </script>
 </body>
 </html>
