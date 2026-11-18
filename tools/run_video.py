@@ -44,7 +44,7 @@ def main() -> None:
     tmp = tempfile.mkdtemp()
     conn = db.connect(Path(tmp) / "run.db")
     session_id = db.create_session(conn, args.format, 12)
-    match = MatchState(args.format, 12, cooldown_sec=5.0)
+    match = MatchState(args.format, 12)
     events: list[tuple[str, dict]] = []
     runner = LiveRunner(
         roi=roi, ocr=None,
@@ -77,7 +77,7 @@ def main() -> None:
                 clock += args.interval
             index += 1
         cap.release()
-        clock += 30.0  # 動画の切れ目は十分な間隔があったものとする
+        clock += 2.0  # 動画の切れ目（短い間隔でも次のレースを取りこぼさないことの確認）
 
     print("\n--- 結果 ---")
     for kind, payload in events:

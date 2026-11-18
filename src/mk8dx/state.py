@@ -24,7 +24,7 @@ class Phase(enum.Enum):
 
 
 class MatchState:
-    def __init__(self, fmt: str, total_races: int = 12, cooldown_sec: float = 60.0):
+    def __init__(self, fmt: str, total_races: int = 12, cooldown_sec: float = 8.0):
         self.format = fmt
         self.total_races = total_races
         self.cooldown_sec = cooldown_sec

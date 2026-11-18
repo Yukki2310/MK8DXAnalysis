@@ -44,6 +44,9 @@
          color: #fff; align-items: center; justify-content: center; font-size: 15px; flex: none; }
   /* 集計中は準備用の枠（映像・形式）を隠して、順位と確認に集中できるようにする */
   body.running .step { display: none; }
+  .card.done { border-color: #bfe6cd; background: #fbfefc; }
+  .card.flash { animation: flash 2s ease; }
+  @keyframes flash { 0% { box-shadow: 0 0 0 6px rgba(31,157,85,.45); } 100% { box-shadow: 0 0 0 0 rgba(31,157,85,0); } }
   .card.attention { border: 2px solid #e8b84a; background: #fffdf5; }
 
   button, .btn {
@@ -158,9 +161,10 @@
     <span class="count" id="heroCount"></span>
     <h2 id="heroTitle">準備しましょう</h2>
     <p id="heroText"></p>
+    <p class="hint" id="heroLive"></p>
   </section>
 
-  <!-- 確認が必要なレース -->
+  <!-- 直前のレースの結果（確認が必要なときは確認、そうでなければ集計結果を毎回同じ形で出す） -->
   <section class="card attention" id="pendingCard" hidden>
     <h2 id="pendingTitle">確認が必要なレース</h2>
     <p class="lead" id="pendingLead"></p>
@@ -171,7 +175,7 @@
       </table>
     </div>
     <div class="reason" id="pendingReason"></div>
-    <div class="row-btns">
+    <div class="row-btns" id="pendingBtns">
       <button id="approveBtn">この内容で確定する</button>
       <button class="secondary" id="discardBtn">この結果は使わない</button>
       <span class="hint">「使わない」を選ぶと、次にリザルトが表示されたときに読み取り直します。</span>
@@ -418,6 +422,26 @@ function renderHero(s) {
   $('#heroTitle').textContent = info.title;
   $('#heroText').textContent = info.text;
   $('#heroCount').textContent = s.match ? `完了 ${s.match.current_race} / ${s.match.total_races} レース` : '';
+  $('#heroLive').textContent = liveLine(s);
+}
+
+function ago(sec) {
+  if (sec == null) return null;
+  if (sec < 3) return 'いま';
+  if (sec < 90) return `${Math.round(sec)}秒前`;
+  return `${Math.round(sec / 60)}分前`;
+}
+
+// 集計中に、映像が届いているか・最後にリザルトを見つけたのはいつかを出す（動いていることが分かるように）
+function liveLine(s) {
+  const live = s.live || {};
+  if (!live.running) return '';
+  const parts = [];
+  if (live.frame_ago != null && live.frame_ago > 6) parts.push('⚠ 映像が届いていません。OBS の仮想カメラが動いているか確認してください');
+  else parts.push('映像を受信中');
+  const seen = ago(live.result_seen_ago);
+  parts.push(seen ? `リザルト画面を最後に見つけたのは${seen}` : 'リザルト画面はまだ見つかっていません');
+  return parts.join(' ・ ');
 }
 
 // ---------- 確認が必要なレース / 選手 ----------
@@ -447,14 +471,43 @@ function syncKeyed(container, items, keyFn, create, update) {
   order.forEach((node, i) => { if (container.children[i] !== node) container.insertBefore(node, container.children[i] || null); });
 }
 
+let shownResultId = null;
+
+function clockText(sec) {
+  if (!sec) return '';
+  const d = new Date(sec * 1000);
+  return d.toLocaleTimeString('ja-JP', { hour12: false });
+}
+
 function renderPending(s) {
-  const p = s.pending;
-  $('#pendingCard').hidden = !p;
-  if (!p) return;
+  // 確認待ちがあればそれ、なければ直前に集計したレース。どちらも同じ表で出す
+  const pendingMode = !!s.pending;
+  const p = s.pending || s.last_result;
+  const card = $('#pendingCard');
+  card.hidden = !p;
+  if (!p) { shownResultId = null; return; }
+  card.classList.toggle('attention', pendingMode);
+  card.classList.toggle('done', !pendingMode);
+  $('#pendingBtns').hidden = !pendingMode;
+  $('#pendingReason').hidden = !pendingMode;
   const plist = playerById();
-  $('#pendingTitle').textContent = `レース ${p.race_number} の確認`;
-  const infos = (p.problems || []).filter((x) => !(p.todo || []).includes(x));
-  $('#pendingLead').textContent = infos.length ? infos.join(' / ') : '内容を確かめて、よければ「確定する」を押してください。';
+  if (pendingMode) {
+    $('#pendingTitle').textContent = `レース ${p.race_number} の確認が必要です`;
+    const infos = (p.problems || []).filter((x) => !(p.todo || []).includes(x));
+    $('#pendingLead').textContent = infos.length ? infos.join(' / ') : '内容を確かめて、よければ「確定する」を押してください。';
+  } else {
+    const t = clockText(p.at);
+    $('#pendingTitle').textContent = `レース ${p.race_number} の結果 ✓ 集計しました${t ? `（${t}）` : ''}`;
+    const notes = (p.warnings || []).join(' / ');
+    $('#pendingLead').textContent = (notes ? notes + ' / ' : '') +
+      '名前やチームが違っていたら、ここで直せます（順位表にもすぐ反映されます）。';
+  }
+  // 新しいレースが来たら、枠を光らせて知らせる（最初の表示では光らせない）
+  if (shownResultId !== null && shownResultId !== p.race_result_id) {
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+    toast(pendingMode ? `レース ${p.race_number} の確認が必要です` : `レース ${p.race_number} を集計しました`);
+  }
+  shownResultId = p.race_result_id;
 
   syncKeyed($('#pendingBody'), p.entries, (e) => e.rank, (e) => {
     const tr = h('tr');
@@ -466,7 +519,7 @@ function renderPending(s) {
     tr.classList.toggle('uncertain', !!e.uncertain);
 
     // いま画面に出ている名前（今回のレースの実画像）。登録済みの選手の画像とは別に出す
-    const src = `/api/review/row/${e.rank}/image?v=${p.race_result_id}`;
+    const src = `/api/result/row/${e.rank}/image?v=${p.race_result_id}`;
     if (tdImg.dataset.src !== src) {
       tdImg.dataset.src = src;
       tdImg.replaceChildren(h('img', { class: 'pimg', src, alt: '今回の画面の名前' }));
@@ -500,13 +553,13 @@ function renderPending(s) {
     tdScore.textContent = e.score;
   });
 
-  const todo = p.todo || [];
+  const todo = pendingMode ? (p.todo || []) : [];
   const reason = $('#pendingReason');
   reason.replaceChildren();
   if (todo.length) {
     reason.append('確定する前に直してください：', h('ul', {}, todo.map((t) => h('li', { text: t }))));
   }
-  $('#approveBtn').disabled = !p.can_approve;
+  $('#approveBtn').disabled = !(pendingMode && p.can_approve);
 }
 
 function playerCard(p) {

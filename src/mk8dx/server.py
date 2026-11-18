@@ -136,8 +136,17 @@ def state_payload() -> dict:
 def _build_state() -> dict:
     rows = db.valid_rows(_db(), _session_id) if _session_id else []
     pending = None
+    last_result = None
+    live = dict(_live_status)
     if _runner is not None and _runner.session_id == _session_id:
         pending = _runner.pending_payload()
+        last_result = _runner.last_result_payload()
+        now = time.time()
+        live["frames"] = _runner.frames_seen
+        live["frame_ago"] = (
+            now - _runner.last_frame_wall if _runner.last_frame_wall else None)
+        live["result_seen_ago"] = (
+            now - _runner.result_seen_wall if _runner.result_seen_wall else None)
     in_match = {r["entry_id"] for r in rows if r.get("entry_id")}
     if pending:
         in_match |= {
@@ -152,7 +161,8 @@ def _build_state() -> dict:
         "match": _match.snapshot() if _match else None,
         "standings": standings.compute(rows, _roster),
         "pending": pending,
-        "live": dict(_live_status),
+        "last_result": last_result,
+        "live": live,
         "roster": _roster_payload(in_match),
         "team_names": team_names,
         "can_undo": bool(rows) and pending is None,
@@ -218,12 +228,14 @@ async def undo_race():
 
 
 # -- 要確認レース -------------------------------------------------------
-@app.get("/api/review/row/{rank}/image")
-async def review_row_image(rank: int):
-    """確認中のレースの、今回の画面に出ていた名前の実画像。"""
+@app.get("/api/result/row/{rank}/image")
+async def result_row_image(rank: int):
+    """直前のレース（確認待ちならそのレース）の、画面に出ていた名前の実画像。"""
     with _lock:
-        pending = _runner.pending if _runner is not None else None
-        images = pending.outcome.row_images if pending else []
+        outcome = None
+        if _runner is not None:
+            outcome = _runner.pending.outcome if _runner.pending else _runner.last_outcome
+        images = outcome.row_images if outcome else []
     if not 1 <= rank <= len(images) or not images[rank - 1]:
         return Response(status_code=404)
     return Response(content=images[rank - 1], media_type="image/jpeg",
@@ -379,11 +391,16 @@ async def live_start(body: dict):
             cam.open()
             asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
             try:
+                last_push = 0.0
                 for frame in cam.frames_at_interval(0.4):
                     if _live_stop.is_set():
                         break
                     with _lock:
                         runner.step(frame, time.monotonic())
+                    # 映像を受信中であることが画面で分かるよう、数秒ごとに状態を送る
+                    if time.monotonic() - last_push >= 2.0:
+                        last_push = time.monotonic()
+                        asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
             finally:
                 cam.release()
         except Exception as exc:

@@ -79,7 +79,11 @@ def test_happy_path_with_cross_check(tmp_path):
     assert runner.cross_check_problems == []
     # 画面が消えてクールダウンが過ぎたら次のレース待ちへ
     script.like = False
-    assert runner.step(FRAME, now=7.0) == "WAITING_RACE"
+    # 画面が連続して消えたら解除（1フレームの途切れでは解除しない）
+    assert runner.step(FRAME, now=7.0) == "COOLDOWN"
+    for k in range(1, 4):
+        phase = runner.step(FRAME, now=7.0 + 0.4 * k)
+    assert phase == "WAITING_RACE"
 
 
 def test_review_flow_approve(tmp_path):

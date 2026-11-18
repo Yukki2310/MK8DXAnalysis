@@ -23,6 +23,7 @@ RaceProcessor をつないで「検出→確定→保存→照合」を回す中
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -43,6 +44,11 @@ from .processor import RaceOutcome, RaceProcessor
 from .rankcheck import SCORE_INK_MIN_PIXELS, score_column_ink, verify_result_candidate
 from .roster import Observation
 from .state import MatchState, Phase
+
+
+# リザルト画面らしさがこの回数（検知周期0.4秒×4 ≒ 1.6秒）連続で無くなったら、
+# 集計後の待機を解除して次のレースを待つ
+GONE_TICKS_TO_RESET = 4
 
 
 def save_outcome(
@@ -108,6 +114,14 @@ class LiveRunner:
     last_outcome: RaceOutcome | None = None
     cross_check_problems: list[str] | None = None
     _gone_count: int = 0
+    # リザルト画面らしさが連続して無かった回数（次のレースの待ち受けへ戻す判断に使う）
+    _gone_ticks: int = 0
+    # 画面に状況を出すための記録（server が読む）
+    frames_seen: int = 0
+    last_frame_wall: float | None = None      # 最後に映像を受け取った時刻
+    result_seen_wall: float | None = None     # 最後にリザルト画面らしさを検知した時刻(time.time)
+    last_result_wall: float | None = None     # 最後にレースを集計した時刻
+    last_race_result_id: int | None = None
     _computed_totals: dict[str, int] = field(default_factory=dict)
     _totals_by_id: dict[int, int] = field(default_factory=dict)
     _last_completed_race: int | None = None
@@ -120,15 +134,20 @@ class LiveRunner:
     # -- メインループ ------------------------------------------------
     def step(self, frame: np.ndarray, now: float) -> str:
         """フレーム1サンプル分を処理し、現在のフェーズ名を返す。"""
+        like = self.result_like_fn(frame, self.roi)
+        self.frames_seen += 1
+        self.last_frame_wall = time.time()
+        if like:
+            self._gone_ticks = 0
+            self.result_seen_wall = time.time()
+        else:
+            self._gone_ticks += 1
         phase = self.match.phase
         if phase is Phase.WAITING_RACE:
             # 名前列インクだけではレース前の紹介画面も候補になるため、
             # 順位列の数字で検証してから検出状態に入る（検証失敗は
             # 1秒間抑制して無駄なOCRを避ける）
-            if (
-                self.result_like_fn(frame, self.roi)
-                and now - self._last_verify_fail_at >= 1.0
-            ):
+            if like and now - self._last_verify_fail_at >= 1.0:
                 if self.verify_fn(frame, self.roi, self.ocr):
                     self.match.on_result_candidate()
                     self.processor.begin_race(self.match.current_race + 1)
@@ -137,7 +156,7 @@ class LiveRunner:
                 else:
                     self._last_verify_fail_at = now
         elif phase is Phase.RESULT_DETECTING:
-            if self.result_like_fn(frame, self.roi):
+            if like:
                 self._gone_count = 0
                 if self._feed(frame) == "ready":
                     self._finalize(frame, now)
@@ -146,10 +165,12 @@ class LiveRunner:
                 if self._gone_count >= 2:
                     self.match.on_screen_gone()
         elif phase is Phase.COOLDOWN:
-            self._cooldown_step(frame, now)
+            self._cooldown_step(frame, now, like)
         # AWAITING_REVIEW / PROCESSING / FINISHED では何もしない
+        # 集計後の待機は「リザルト画面が一定時間なくなったら」解除する。
+        # 1フレームだけ画面らしさが途切れても解除しない。
         self.match.tick(
-            screen_gone=not self.result_like_fn(frame, self.roi), now=now
+            screen_gone=self._gone_ticks >= GONE_TICKS_TO_RESET, now=now
         )
         return self.match.phase.value
 
@@ -170,6 +191,8 @@ class LiveRunner:
             self.conn, self.session_id, outcome,
             screenshot_path=self._save_screenshot(frame, outcome.race_index))
         self.last_outcome = outcome
+        self.last_race_result_id = race_result_id
+        self.last_result_wall = time.time()
         self.match.on_processing_done(valid=outcome.confirmed, now=now)
         if outcome.confirmed:
             self._register_completed(outcome, race_result_id)
@@ -198,12 +221,12 @@ class LiveRunner:
         except Exception:
             return None  # 保存に失敗しても集計は止めない
 
-    def _cooldown_step(self, frame: np.ndarray, now: float) -> None:
+    def _cooldown_step(self, frame: np.ndarray, now: float, like: bool) -> None:
         if (
             self._last_completed_race is not None
             and self._cross_checked_race != self._last_completed_race
             and now - self._last_classify_at >= 1.0
-            and self.result_like_fn(frame, self.roi)
+            and like
         ):
             self._last_classify_at = now
             self._try_cross_check(frame, now)
@@ -343,6 +366,21 @@ class LiveRunner:
             "teams": outcome.teams,
         }
 
+    def last_result_payload(self) -> dict | None:
+        """直前に集計したレースの結果（確認待ちでなければ確定済み）。毎回の表示に使う。"""
+        outcome = self.last_outcome
+        if outcome is None or self.last_race_result_id is None:
+            return None
+        return {
+            "race_result_id": self.last_race_result_id,
+            "race_number": outcome.race_index,
+            "confirmed": self.pending is None,
+            "at": self.last_result_wall,
+            "warnings": outcome.warnings,
+            "entries": outcome.entries,
+            "teams": outcome.teams,
+        }
+
     def undo_last_race(self) -> bool:
         """直前に確定したレースを取り消す（DBと累計を巻き戻す）。"""
         if not self._completed or self.pending is not None:
@@ -358,6 +396,8 @@ class LiveRunner:
             if name and name in self._computed_totals:
                 self._computed_totals[name] -= e["score"]
         self.match.undo_last_race()
+        self.last_outcome = None
+        self.last_race_result_id = None
         self._last_completed_race = (
             self._completed[-1][1].race_index if self._completed else None
         )

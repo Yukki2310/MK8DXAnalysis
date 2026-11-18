@@ -181,11 +181,12 @@ class RaceProcessor:
         self._name_entries(resolution)
         outcome = self._build_outcome(consensus, resolution)
         if new_ids:
-            outcome.problems.append(
+            # 名前やチームは画面でいつでも直せて、順位表にも後から反映される。
+            # チーム分けが成立していれば確定を止めず、お知らせとして表示する
+            outcome.warnings.append(
                 f"初めて見る選手が{len(new_ids)}名います。"
-                "名前とチームを確認してください"
+                "名前とチームが合っているか確認してください"
             )
-            outcome.status = "awaiting_review"
         return outcome
 
     def _name_entries(self, resolution: Resolution) -> None:
