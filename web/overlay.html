@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>MK8DX Overlay</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif; }
+  #board { position: absolute; top: 24px; right: 24px; width: 340px; color: #fff; }
+  #race { font-size: 20px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,.8); margin-bottom: 8px; }
+  .row { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.55);
+         border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; }
+  .bar { width: 8px; align-self: stretch; border-radius: 4px; }
+  .rank { font-weight: 700; width: 22px; text-align: center; }
+  .tag { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .total { font-size: 20px; font-weight: 800; }
+  .diff { width: 52px; text-align: right; opacity: .85; font-size: 13px; }
+  .last { width: 44px; text-align: right; font-size: 13px; color: #ffd94d; }
+  .flash { animation: flash .8s ease; }
+  @keyframes flash { 0% { background: rgba(255,217,77,.75); } 100% { background: rgba(0,0,0,.55); } }
+</style>
+</head>
+<body>
+<div id="board">
+  <div id="race">Race - / 12</div>
+  <div id="rows"></div>
+</div>
+<script>
+  const rowsEl = document.getElementById('rows');
+  const raceEl = document.getElementById('race');
+  let prevTotals = {};
+  function render(state) {
+    if (!state) return;
+    const m = state.match;
+    if (m) raceEl.textContent = `Race ${Math.min(m.current_race + 1, m.total_races)} / ${m.total_races}`;
+    rowsEl.innerHTML = '';
+    for (const t of state.standings || []) {
+      const row = document.createElement('div');
+      row.className = 'row' + (prevTotals[t.tag] !== undefined && prevTotals[t.tag] !== t.total ? ' flash' : '');
+      row.innerHTML = `<div class="bar" style="background:${t.color || '#888'}"></div>
+        <div class="rank">${t.rank}</div><div class="tag">${t.tag}</div>
+        <div class="last">+${t.last_race_points}</div>
+        <div class="total">${t.total}</div>
+        <div class="diff">${t.diff_from_top === 0 ? '' : t.diff_from_top}</div>`;
+      rowsEl.appendChild(row);
+      prevTotals[t.tag] = t.total;
+    }
+  }
+  function connect() {
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'STATE_UPDATE') render(msg);
+    };
+    ws.onclose = () => setTimeout(connect, 2000);
+  }
+  connect();
+</script>
+</body>
+</html>

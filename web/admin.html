@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>MK8DX 管理画面</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; background: #16181d; color: #eee; }
+  h1 { font-size: 20px; }
+  section { background: #22252d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border-bottom: 1px solid #3a3f4c; padding: 6px 8px; text-align: left; }
+  #alerts { color: #ff8080; white-space: pre-wrap; }
+  textarea { width: 100%; background: #101216; color: #eee; border: 1px solid #3a3f4c; border-radius: 6px; }
+  button { background: #4363d8; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  select, input { background: #101216; color: #eee; border: 1px solid #3a3f4c; border-radius: 6px; padding: 6px; }
+</style>
+</head>
+<body>
+<h1>MK8DX 自動集計 管理画面</h1>
+
+<section>
+  <h2>マッチコントロール</h2>
+  形式:
+  <select id="format">
+    <option value="2v2">2v2（6チーム）</option>
+    <option value="3v3">3v3（4チーム）</option>
+    <option value="4v4">4v4（3チーム）</option>
+  </select>
+  <button id="reset">新規セッション開始（リセット）</button>
+  <span id="matchState"></span>
+</section>
+
+<section>
+  <h2>警告</h2>
+  <div id="alerts">なし</div>
+</section>
+
+<section>
+  <h2>現在の順位表</h2>
+  <table><thead><tr><th>順位</th><th>チーム</th><th>合計</th><th>首位との差</th><th>直前レース</th></tr></thead>
+  <tbody id="standings"></tbody></table>
+</section>
+
+<section>
+  <h2>検証用: リザルト投入（カメラなしテスト）</h2>
+  <p>名前12名（順位順、カンマ区切り）とスコア12個を投入して集計を通します。</p>
+  <textarea id="simNames" rows="2">あきら,Xたろう,あかり,べーた1,Xじろう,べーた2,みく,Zed1,みき,Zed2,Qoo1,Qoo2</textarea>
+  <textarea id="simScores" rows="1">15,12,10,9,8,7,6,5,4,3,2,1</textarea>
+  <button id="simulate">投入する</button>
+</section>
+
+<script>
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  const alertsEl = document.getElementById('alerts');
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'STATE_UPDATE') {
+      const m = msg.match;
+      document.getElementById('matchState').textContent =
+        m ? ` / 完了レース: ${m.current_race} / ${m.total_races}（状態: ${m.phase}）` : '';
+      const tb = document.getElementById('standings');
+      tb.innerHTML = '';
+      for (const t of msg.standings || []) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${t.rank}</td><td>${t.tag}</td><td>${t.total}</td><td>${t.diff_from_top}</td><td>+${t.last_race_points}</td>`;
+        tb.appendChild(tr);
+      }
+    } else if (msg.type === 'ALERT') {
+      alertsEl.textContent = msg.message + '\n' + JSON.stringify(msg.detail, null, 2);
+    }
+  };
+  document.getElementById('reset').onclick = async () => {
+    await fetch('/api/session', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ format: document.getElementById('format').value, total_races: 12 }) });
+  };
+  document.getElementById('simulate').onclick = async () => {
+    const names = document.getElementById('simNames').value.split(',').map(s => s.trim());
+    const scores = document.getElementById('simScores').value.split(',').map(s => parseInt(s.trim(), 10));
+    const res = await fetch('/api/simulate_result', { method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ names, scores }) });
+    const data = await res.json();
+    if (!data.ok) alertsEl.textContent = '検証NG: ' + JSON.stringify(data, null, 2);
+  };
+</script>
+</body>
+</html>
