@@ -6,8 +6,8 @@
 （.gitignore 対象。動画・フレームはリポジトリに入れない）。
 
 使い方:
-  python tools/extract_frames.py --url https://www.youtube.com/watch?v=BAPLF2r7hfg \\
-      --section 5:40-6:00 --section 12:00-12:20 --section 14:40-15:04 --section 18:00-18:30 --fps 2
+  python tools/extract_frames.py --url https://www.youtube.com/watch?v=<動画ID> \\
+      --section 5:40-6:00 --section 12:00-12:20 --fps 2
   python tools/extract_frames.py --video local.mp4 --section 0:10-0:30
 
 必要な外部コマンド: ffmpeg（常に）、yt-dlp（--url のとき: pip install yt-dlp）。
