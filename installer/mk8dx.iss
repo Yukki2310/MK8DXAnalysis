@@ -11,8 +11,11 @@ DefaultDirName={autopf}\MK8DXAnalysis
 DefaultGroupName={#AppName}
 OutputDir=..\dist\installer
 OutputBaseFilename=MK8DXAnalysis-Setup
-Compression=lzma2
-SolidCompression=yes
+; モデルファイル（数GB）は圧縮できないので、速さ優先の圧縮にして、大きなインストーラは複数ファイルに分割する
+Compression=lzma2/fast
+SolidCompression=no
+DiskSpanning=yes
+DiskSliceSize=2000000000
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 DisableProgramGroupPage=yes

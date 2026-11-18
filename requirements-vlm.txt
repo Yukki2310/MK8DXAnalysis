@@ -1,0 +1,7 @@
+# 精度優先の文字認識（視覚言語モデル）に必要なもの。無くてもアプリは動く（軽量な PP-OCRv5 に切り替わる）。
+# torch は NVIDIA GPU 用のビルドを使う:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+transformers>=5.0
+accelerate>=1.0
+huggingface_hub>=0.30
+pillow>=10.0

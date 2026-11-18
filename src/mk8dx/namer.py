@@ -4,8 +4,8 @@
 「新しく現れた選手に表示名の初期値を付ける」ためだけに使う。読みが
 ずれても管理画面で直せば固定される（Roster.rename）。
 
-入力は名前行クロップ（生の画像）。複数のクロップを読み、信頼度つきで
-多数決する。
+認識エンジン（textrec.py）は精度の高いものを自動で選ぶ:
+GPU があれば視覚言語モデル（Qwen3-VL）、無ければ PP-OCRv5。
 """
 from __future__ import annotations
 
@@ -16,42 +16,81 @@ import numpy as np
 
 NAME_TEXT_WIDTH = 365  # 名前の文字領域の幅（これより右は国旗）
 
+# キリル文字の見た目が同じラテン文字への置き換え（VLM が 'Xb' を 'Хб' のように
+# キリル文字で返すことがあるため。ラウンジの名前はラテン文字と日本語が中心）
+_CYRILLIC_TO_LATIN = str.maketrans({
+    "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I", "К": "K",
+    "М": "M", "О": "O", "Р": "P", "Т": "T", "Х": "X", "У": "Y", "Ѕ": "S",
+    "а": "a", "с": "c", "е": "e", "і": "i", "о": "o", "р": "p", "х": "x",
+    "у": "y", "ѕ": "s", "б": "b", "Б": "B",
+})
+_FULLWIDTH_START, _FULLWIDTH_END = 0xFF01, 0xFF5E   # 全角の ！ ～ （半角 ! ~ との差は 0xFEE0）
+_NON_ASCII = "[^\\x00-\\x7f]"
+
 
 def clean_text(text: str) -> str:
-    """OCR 出力の整形: ★の表記ゆれ・日本語間の空白・末尾のゴミを直す。"""
+    """認識結果の整形: 全角英数→半角、キリル文字の見間違い、★の表記ゆれ、
+    日本語間の空白、末尾のゴミを直す。"""
+    text = "".join(
+        chr(ord(ch) - 0xFEE0) if _FULLWIDTH_START <= ord(ch) <= _FULLWIDTH_END else ch
+        for ch in text
+    )
+    text = text.translate(_CYRILLIC_TO_LATIN)
     text = text.replace("*", "★").strip()
     text = re.sub(r"\s*[|｜]\s*$", "", text)         # 末尾の縦棒ゴミ
     text = re.sub(r"(?<=#)\s+", "", text)             # '# 1' -> '#1'
-    # 日本語・記号（非ASCII）に隣り合う空白は OCR が入れたものとして除く
-    text = re.sub(r"(?<=[^\x00-\x7f])\s+|\s+(?=[^\x00-\x7f])", "", text)
+    # 日本語・記号（非ASCII）に隣り合う空白は認識が入れたものとして除く
+    text = re.sub(rf"(?<={_NON_ASCII})\s+|\s+(?={_NON_ASCII})", "", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
 class NameReader:
-    """名前行クロップ群から表示名を読む。"""
+    """名前行クロップ群から表示名を読む。認識エンジンは精度の高いものを自動で選ぶ。"""
 
-    def __init__(self, recognizer=None) -> None:
-        if recognizer is None:
-            from .textrec import NameRecognizer
+    def __init__(self, recognizer="auto") -> None:
+        if recognizer == "auto":
+            from .textrec import create_recognizer
 
-            recognizer = NameRecognizer()
-            recognizer.load()
+            recognizer = create_recognizer()
         self._rec = recognizer
 
     @property
     def available(self) -> bool:
-        return bool(getattr(self._rec, "available", False))
+        return self._rec is not None and bool(getattr(self._rec, "available", False))
+
+    @property
+    def engine_name(self) -> str:
+        return getattr(self._rec, "name", "none") if self.available else "none"
+
+    @property
+    def max_reads(self) -> int:
+        """1選手あたりに読み取りを行う最大回数（精度の高いエンジンは1回で足りる）。"""
+        return int(getattr(self._rec, "max_reads", 3))
 
     def read(self, crops: list[np.ndarray]) -> str:
-        """複数クロップの読みを、信頼度の合計が最大のものに決めて返す。"""
+        return self.read_many([crops])[0]
+
+    __call__ = read
+
+    def read_many(self, crop_lists: list[list[np.ndarray]]) -> list[str]:
+        """選手ごとのクロップ群をまとめて読む（GPUではまとめた方が速い）。
+
+        複数クロップは信頼度の合計が最大の読みに決める。
+        """
         if not self.available:
-            return ""
-        votes: dict[str, float] = defaultdict(float)
-        for crop in crops:
-            text, score = self._rec.recognize(crop[:, :NAME_TEXT_WIDTH])
+            return [""] * len(crop_lists)
+        per_read = int(getattr(self._rec, "crops_per_read", 3))
+        flat: list[np.ndarray] = []
+        owners: list[int] = []
+        for k, crops in enumerate(crop_lists):
+            for crop in crops[-per_read:]:
+                flat.append(crop[:, :NAME_TEXT_WIDTH])
+                owners.append(k)
+        votes: list[dict[str, float]] = [defaultdict(float) for _ in crop_lists]
+        for owner, (text, score) in zip(owners, self._rec.recognize_many(flat)):
             text = clean_text(text)
             if text:
-                votes[text] += max(score, 0.01)
-        if not votes:
-            return ""
-        return max(votes.items(), key=lambda kv: kv[1])[0]
+                votes[owner][text] += max(score, 0.01)
+        return [
+            max(v.items(), key=lambda kv: kv[1])[0] if v else "" for v in votes
+        ]

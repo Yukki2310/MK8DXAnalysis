@@ -34,6 +34,7 @@ def selfcheck() -> int:
         cv2 = None
     from .paths import resource_path
     from .rankcheck import default_templates
+    from .textrec import models_dir
 
     for rel in ("web/admin.html", "web/overlay.html", "config/roi_1080p.json"):
         if not resource_path(rel).exists():
@@ -47,6 +48,9 @@ def selfcheck() -> int:
     from .namer import NameReader
 
     reader = NameReader()
+    print("名前の文字認識エンジン:", reader.engine_name)
+    for reason in getattr(reader._rec, "skipped", []):
+        print("  使えなかったエンジン -", reason)
     ocr_ok = False
     if reader.available and cv2 is not None:
         import numpy as np
@@ -58,8 +62,12 @@ def selfcheck() -> int:
     print("名前の文字認識:", "利用可" if ocr_ok else "利用不可（仮名で動作）")
     if not ocr_ok:
         problems.append("文字認識モデルを実行できません")
-    if not resource_path("assets/models/ch_PP-OCRv5_rec_mobile.onnx").exists():
+    if not (models_dir() / "ch_PP-OCRv5_rec_mobile.onnx").exists():
         problems.append("文字認識モデル(assets/models)がありません")
+    if reader.engine_name == "PP-OCRv5" and (
+            models_dir() / "Qwen3-VL-4B-Instruct").exists():
+        print("注意: 視覚言語モデルを同梱していますが、この環境では使えません"
+              "（NVIDIA GPU が無い、または空きメモリ不足）。軽量版で動作します。")
     for p in problems:
         print("NG:", p)
     print("selfcheck:", "NG" if problems else "OK")

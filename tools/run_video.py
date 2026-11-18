@@ -40,7 +40,7 @@ def main() -> None:
     roi = load_roi_config(ROOT / "config" / "roi_1080p.json")
     roster = Roster()
     namer = NameReader()
-    print("名前OCR:", "PP-OCRv5" if namer.available else "なし（仮名）")
+    print("名前OCR:", namer.engine_name)
     tmp = tempfile.mkdtemp()
     conn = db.connect(Path(tmp) / "run.db")
     session_id = db.create_session(conn, args.format, 12)
@@ -49,7 +49,7 @@ def main() -> None:
     runner = LiveRunner(
         roi=roi, ocr=None,
         processor=RaceProcessor(
-            roster, args.format, namer=namer.read if namer.available else None),
+            roster, args.format, namer=namer if namer.available else None),
         match=match, conn=conn, session_id=session_id,
         on_event=lambda kind, payload: events.append((kind, payload)),
     )

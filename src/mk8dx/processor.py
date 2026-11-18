@@ -70,9 +70,10 @@ class RaceProcessor:
         self.assume_closed = assume_closed
         self.min_frames = min_frames
         self.stable_frames = stable_frames
-        # namer: 名前クロップ群 -> 表示名 の関数（NameReader.read）。未指定なら
-        # 新規選手は「選手N」の仮名のままで、管理画面で名前を付ける
+        # namer: 名前クロップ群 -> 表示名 の関数、または NameReader（read_many を持つ）。
+        # 未指定なら新規選手は「選手N」の仮名のままで、管理画面で名前を付ける
         self.namer = namer
+        self.max_name_reads = int(getattr(namer, "max_reads", MAX_NAME_READS))
         self._race_index: int | None = None
         self._votes: list[Counter] = []       # 順位ごとの名前投票
         self._last_seen: list[dict[str, int]] = []  # 順位ごとの最終観測フレーム
@@ -194,19 +195,28 @@ class RaceProcessor:
         if self.namer is None:
             return
         done: set[int] = set()
+        targets: list[tuple] = []
         for row, entry_id in enumerate(resolution.entry_ids):
             if entry_id is None or entry_id in done or resolution.low_confidence[row]:
                 continue
             entry = self.roster._entry_by_id(entry_id)
             if (entry is None or entry.pinned_name
-                    or entry.name_reads >= MAX_NAME_READS
+                    or entry.name_reads >= self.max_name_reads
                     or not self._crops[row]):
                 continue
             done.add(entry_id)
-            try:
-                text = self.namer(list(self._crops[row]))
-            except Exception:
-                text = ""
+            targets.append((entry, list(self._crops[row])))
+        if not targets:
+            return
+        crop_lists = [crops for _, crops in targets]
+        try:
+            if hasattr(self.namer, "read_many"):
+                texts = self.namer.read_many(crop_lists)   # まとめて読む
+            else:
+                texts = [self.namer(crops) for crops in crop_lists]
+        except Exception:
+            texts = [""] * len(targets)
+        for (entry, _), text in zip(targets, texts):
             entry.name_reads += 1
             if text:
                 entry.variants[text] += 1

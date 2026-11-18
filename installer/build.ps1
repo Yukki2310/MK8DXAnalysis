@@ -1,9 +1,13 @@
 # 配布物のビルド手順（Windows / PowerShell）。
-#   powershell -ExecutionPolicy Bypass -File installer\build.ps1
+#   powershell -ExecutionPolicy Bypass -File installer\build.ps1            # 精度優先（視覚言語モデル同梱）
+#   powershell -ExecutionPolicy Bypass -File installer\build.ps1 -LightOnly # 軽量版（PP-OCRv5 のみ）
+#
 # 1. 配布専用の venv（.venv-build）に実行時依存＋PyInstaller だけを入れる
 #    （開発用 venv の paddle 等を巻き込まないため）
-# 2. PyInstaller(onedir) で dist\MK8DXAnalysis を作る
-# 3. Inno Setup(ISCC.exe) があればインストーラ、無ければ zip を作る
+# 2. 文字認識モデルを assets\models に用意する（初回のみネットワーク、視覚言語モデルは約13GB）
+# 3. PyInstaller(onedir) で dist\MK8DXAnalysis を作る
+# 4. Inno Setup(ISCC.exe) があればインストーラ、無ければ zip を作る
+param([switch]$LightOnly)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -13,9 +17,15 @@ if (-not (Test-Path ".venv-build")) {
 }
 $py = ".venv-build\Scripts\python.exe"
 & $py -m pip install -q -r requirements.txt pyinstaller
+if (-not $LightOnly) {
+    # GPU 版の torch は専用の配布元から入れる（CUDA 12.6）
+    & $py -m pip install -q torch torchvision --index-url https://download.pytorch.org/whl/cu126
+    & $py -m pip install -q -r requirements-vlm.txt
+}
 & $py -m pip install -q -e . --no-deps
-# 文字認識モデルを assets\models に用意する（初回のみネットワークが必要）
-& $py toolsetch_models.py
+
+$fetch = Join-Path $root "tools\fetch_models.py"
+if ($LightOnly) { & $py $fetch --no-vlm } else { & $py $fetch }
 
 & $py -m PyInstaller installer\mk8dx.spec --noconfirm --distpath dist --workpath build
 
@@ -26,11 +36,12 @@ if (-not $iscc) {
 }
 if ($iscc) {
     & $iscc.Source installer\mk8dx.iss
-    Write-Host "インストーラ: dist\installer\MK8DXAnalysis-Setup.exe"
+    Write-Host "インストーラ: dist\installer\MK8DXAnalysis-Setup.exe（容量が大きい場合は複数ファイルに分割されます）"
 } else {
     $zip = "dist\MK8DXAnalysis-portable.zip"
     if (Test-Path $zip) { Remove-Item $zip }
-    Compress-Archive -Path dist\MK8DXAnalysis -DestinationPath $zip
+    # 4GB を超えるファイルも扱える Windows 標準の tar（bsdtar）で zip を作る
+    tar.exe -a -c -f $zip -C dist MK8DXAnalysis
     Write-Host "Inno Setup が見つからないため zip を作成しました: $zip"
     Write-Host "インストーラが必要なら Inno Setup 6 を入れて再実行してください。"
 }

@@ -21,8 +21,8 @@ class FakeRecognizer:
     def __init__(self, reads):
         self.reads = list(reads)
 
-    def recognize(self, image):
-        return self.reads.pop(0)
+    def recognize_many(self, images):
+        return [self.reads.pop(0) for _ in images]
 
 
 def _img(text="FR"):
@@ -99,3 +99,31 @@ def test_image_falls_back_to_mask_png_without_thumb():
 
 def test_encode_thumb_none():
     assert encode_thumb(None) is None
+
+
+def test_clean_text_normalizes_fullwidth_and_cyrillic_lookalikes():
+    assert clean_text("Xbねえあまあｂ") == "Xbねえあまあb"      # 全角英字 → 半角
+    assert clean_text("Хб") == "Xb"                      # キリル文字の Х б
+    assert clean_text("ＦＲ ＩＲＯＮＭＡＮ") == "FR IRONMAN"
+
+
+def test_read_many_batches_and_respects_crops_per_read():
+    class Rec:
+        available = True
+        crops_per_read = 1
+        max_reads = 1
+        name = "fake"
+
+        def __init__(self):
+            self.calls = []
+
+        def recognize_many(self, images):
+            self.calls.append(len(images))
+            return [("N%d" % i, 1.0) for i in range(len(images))]
+
+    rec = Rec()
+    reader = NameReader(rec)
+    out = reader.read_many([[_img(), _img(), _img()], [_img()], [_img(), _img()]])
+    assert out == ["N0", "N1", "N2"]
+    assert rec.calls == [3]            # 選手ごとに1枚だけ、全員まとめて1回で読む
+    assert reader.max_reads == 1 and reader.engine_name == "fake"

@@ -12,3 +12,6 @@ dist/
 .venv-build/
 *.egg-info/
 assets/models/
+.venv-eval/
+dist_nomodel/
+build_nomodel/

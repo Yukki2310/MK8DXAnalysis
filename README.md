@@ -16,10 +16,12 @@
 - **順位は固定フォントなのでテンプレート照合**（`rankcheck.py`）: コース選択画面などの誤検知を棄却する。
 - **ゴール順画面／累計画面の判別**: スコア列の加算表示（`+N`）の有無と、
   行の並びが自前累計の降順かどうかで判定（`runner.py`）。
-- **文字認識は新規選手の名前提案だけ**（`namer.py` / `textrec.py`）: PP-OCRv5 の認識モデルを ONNX Runtime で
-  実行する（行画像1枚を読むだけ。約20ms/行、モデル16MB）。管理画面で直せば固定される。
-  実測では名前24行中22行が完全一致（Windows標準OCRは16行、PP-OCRv4 日本語は9行、残りは ◇ ♭ などの記号）。
-  管理画面には、読み取った文字ではなく**ゲーム画面の名前の実画像**を出すので、読み違いがあっても見分けられる。
+- **文字認識は新規選手の名前提案だけ**（`namer.py` / `textrec.py`）: 精度優先で、使える中で最良のエンジンを自動で選ぶ。
+  NVIDIA GPU（空き約10.5GB以上）なら視覚言語モデル **Qwen3-VL-4B**、足りなければ 2B、GPUが無ければ
+  PP-OCRv5 の認識モデル（ONNX、CPUで動く）。名前220枚の実測で、Qwen3-VL-4B は厳密一致 196枚、
+  PP-OCRv5 は 158枚、EasyOCR は 40枚（詳細は `docs/ocr-selection.md`）。記号（★ ◇）も読める。
+  どれも使えなければ「選手N」の仮名で動く。管理画面には、読み取った文字ではなく**ゲーム画面の名前の
+  実画像**を出すので、読み違いがあっても見分けられ、画面で直せば固定される。
 - **チームの自動提案**（`teams.py`）: 名前の左端から「同じ形が続く幅」を画像で測り、同じタグで始まる選手を
   人数制約（2/3/4人）に合う組に分ける。文字認識が読み違えても動き、大文字小文字の違いは文字の読みで補う。
   決められなければ名前の先頭文字からの推定にフォールバックし、それでもだめなら画面で設定する。
@@ -36,7 +38,7 @@ src/mk8dx/
   identity.py              文字マスク抽出と距離計算（画像ベース識別）
   rankcheck.py             順位列テンプレートによるリザルト画面検証
   roster.py                選手名簿（画像距離＋国旗で一括割り当て、多数決、永続化）
-  namer.py / textrec.py    新規選手の名前提案（PP-OCRv5 認識モデル、ONNX）
+  namer.py / textrec.py    新規選手の名前提案（Qwen3-VL → PP-OCRv5 の順に使えるものを選ぶ）
   processor.py             複数フレームの観測蓄積→確定→チーム判定
   runner.py                ライブランナー（検知→確定→保存→累計照合、承認フロー）
   pipeline.py              フレームから観測（マスク・国旗）を抽出、累計クロスチェック
@@ -83,7 +85,8 @@ py -3.12 -m venv .venv
 .venv\Scripts\python tools\run_video.py --auto-approve clip1.mp4 clip2.mp4   # 動画で通し確認
 ```
 
-配布物のビルド（PyInstaller onedir ＋ Inno Setup。Inno Setup が無ければ zip。文字認識モデルは初回に自動取得）:
+配布物のビルド（PyInstaller onedir ＋ Inno Setup。Inno Setup が無ければ zip。文字認識モデルは初回に自動取得。
+視覚言語モデルを含む完全版は約17GBになる。`-LightOnly` を付けると PP-OCRv5 のみの軽量版）:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File installer\build.ps1
@@ -96,7 +99,7 @@ dist\MK8DXAnalysis\MK8DXAnalysis.exe --selfcheck
 ## 実装状況と既知の制約
 
 - [x] 画像ベース識別、順位テンプレート検証、加算表示／並び順によるフェーズ判別
-- [x] ONNX の文字認識による名前提案、Paddle/Screen AI/Windows OCR 依存の除去
+- [x] 精度優先の文字認識（Qwen3-VL → PP-OCRv5）による名前提案、Paddle/Screen AI/Windows OCR 依存の除去
 - [x] PyInstaller 配布版（selfcheck とサーバー応答を確認）、Inno Setup スクリプト
 - [ ] 実機（OBS仮想カメラ＋Switch実況）での通し確認。検証は YouTube 動画（圧縮映像）のみ
 - 1080p 前提のROI。別解像度は 1920x1080 へ拡大縮小して入力する想定（未対応）

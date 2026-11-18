@@ -436,6 +436,7 @@ function ago(sec) {
 function liveLine(s) {
   const live = s.live || {};
   if (!live.running) return '';
+  if (live.name_ocr === 'loading') return '名前の文字認識を準備しています（初回は数十秒かかります）…';
   const parts = [];
   if (live.frame_ago != null && live.frame_ago > 6) parts.push('⚠ 映像が届いていません。OBS の仮想カメラが動いているか確認してください');
   else parts.push('映像を受信中');

@@ -370,15 +370,17 @@ async def live_start(body: dict):
     def run() -> None:
         global _runner
         try:
+            _live_status["name_ocr"] = "loading"   # モデルの読み込みに数十秒かかる
+            asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
             namer = NameReader()
-            _live_status["name_ocr"] = "rapidocr" if namer.available else "none"
+            _live_status["name_ocr"] = namer.engine_name
             roi = load_roi_config(str(ROI_PATH))
             # 確定した選手がいれば「全員そろっている」前提で消去法も使い、
             # いなければ名簿を自動構築する
             has_confirmed = any(e.confirmed for e in _roster.entries)
             processor = RaceProcessor(
                 _roster, match.format, assume_closed=has_confirmed,
-                namer=namer.read if namer.available else None,
+                namer=namer if namer.available else None,
             )
             runner = LiveRunner(
                 roi=roi, ocr=None, processor=processor, match=match,
