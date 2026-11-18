@@ -33,9 +33,24 @@ def crop_rows(frame: np.ndarray, roi: dict) -> dict[int, dict[str, np.ndarray]]:
         rank = int(rank_str)
         rows[rank] = {
             kind: crop(frame, tuple(regions[kind]))  # type: ignore[arg-type]
-            for kind in ("rank", "name", "score")
+            for kind in ("rank", "name", "score", "total")
+            if kind in regions
         }
     return rows
+
+
+def upscale(image: np.ndarray, factor: float = 2.0) -> np.ndarray:
+    """拡大のみを行う（名前OCRでは二値化より生画像の拡大が有効だった）。"""
+    return cv2.resize(
+        image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC
+    )
+
+
+def edge_density(region: np.ndarray) -> float:
+    """領域内のエッジ画素比率。スコア列に数字があるか（フェーズ判別）に使う。"""
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY) if region.ndim == 3 else region
+    edges = cv2.Canny(gray, 50, 150)
+    return float((edges > 0).mean())
 
 
 def preprocess_for_ocr(image: np.ndarray, *, upscale: float = 2.0) -> np.ndarray:
