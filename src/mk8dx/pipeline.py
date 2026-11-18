@@ -17,6 +17,7 @@ import numpy as np
 from .clustering import Assignment, assign_teams
 from .ocr import OcrEngine, parse_points_text
 from .preprocess import crop_rows, edge_density
+from .roster import Observation, extract_flag_signature
 from .scoring import POINTS, points_for_rank, validate_scores
 from .tags import normalize_name
 
@@ -122,6 +123,27 @@ def classify_phase(frame: np.ndarray, roi: dict, ocr: OcrEngine) -> str:
         else:
             totals.append(None)
     return classify_plain_phase(totals)
+
+
+def extract_observations(
+    frame: np.ndarray, roi: dict, ocr: OcrEngine
+) -> list[Observation]:
+    """フェーズAフレームからロスター照合用の観測（名前＋国旗署名）を抽出する。
+
+    RaceProcessor.add_frame に渡すための橋渡し。名前は
+    analyze_result_frame と同じ読み方（日英デュアルエンジン）をし、
+    国旗は roster.extract_flag_signature で署名化する。
+    """
+    rows = crop_rows(frame, roi)
+    observations: list[Observation] = []
+    for rank in range(1, 13):
+        regions = rows.get(rank)
+        name = ""
+        if regions and "name" in regions:
+            name, _ = ocr.recognize_name(regions["name"])
+        flag = extract_flag_signature(frame, roi, rank)
+        observations.append(Observation(name=name, flag=flag))
+    return observations
 
 
 def analyze_result_frame(

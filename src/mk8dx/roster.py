@@ -47,6 +47,7 @@ CONFUSION_COST = 0.35
 SYMBOL_SUB_COST = 0.6
 BASE_EDIT_COST = 1.0
 FIRST_CHAR_PENALTY = 1.2
+FRAGMENT_PENALTY_PER_CHAR = 0.8
 # ステップ2の実データで観測した混同ペア（正規化後の文字同士）
 _CONFUSION_PAIRS = {
     frozenset(pair)
@@ -176,6 +177,11 @@ def name_cost(observed: str, canonical: str) -> float:
     cost = prev[-1]
     if a[0] != b[0] and frozenset((a[0], b[0])) not in _CONFUSION_PAIRS:
         cost += FIRST_CHAR_PENALTY
+    # 断片ペナルティ: 観測が正規名の半分未満の長さしかない場合、
+    # 編集距離は絶対値が小さくなりすぎ、短いゴミ読み（'-' 等）が
+    # 短い正規名を奪ってしまう（ステップ4検証で実測）。不足分を足す。
+    if len(a) * 2 < len(b):
+        cost += (len(b) - len(a)) * FRAGMENT_PENALTY_PER_CHAR
     return cost
 
 
@@ -317,6 +323,14 @@ class Roster:
             entry.flag_signatures.append(obs.flag)
         self.entries.append(entry)
         return entry
+
+    def remove(self, entry_id: int) -> bool:
+        """エントリを削除する（管理画面用）。削除できたら True。"""
+        for i, e in enumerate(self.entries):
+            if e.id == entry_id:
+                del self.entries[i]
+                return True
+        return False
 
     def _entry_by_id(self, entry_id: int) -> RosterEntry | None:
         for e in self.entries:
