@@ -277,3 +277,39 @@ def test_rename_entry_pins_name_and_confirms():
     roster.resolve_race([Observation("RR")], race_index=2)
     assert entry.canonical_name == "RR★"
     assert not roster.rename(9999, "nobody")
+
+
+def test_exact_name_match_not_overturned_by_flag():
+    import numpy as np
+
+    roster = Roster()
+    sig_a = np.zeros(176)
+    sig_b = np.ones(176)
+    # 'racist #1'（国旗A）と 'racist #2'（国旗B）を2レース出現させ本登録化
+    for race in (1, 2):
+        roster.resolve_race(
+            [Observation("racist #1", sig_a), Observation("racist #2", sig_b)],
+            race_index=race)
+    # 国旗抽出がノイズで逆転しても、名前完全一致が優先される
+    res = roster.resolve([Observation("racist #1", sig_b),
+                          Observation("racist #2", sig_a)])
+    names = roster.resolved_names(res)
+    assert names == ["racist #1", "racist #2"]
+
+
+def test_capacity_grows_from_distinct_flags():
+    import numpy as np
+
+    roster = Roster()
+    sig_a = np.zeros(176)
+    sig_b = np.ones(176)
+    # レース1: RR が国旗Aで1人だけ出現
+    roster.resolve_race([Observation("RR", sig_a)], race_index=1)
+    entry = roster.entries[0]
+    assert entry.capacity == 1
+    # レース2: RR が国旗Bで1人だけ出現（同時出現はしていない）
+    roster.resolve_race([Observation("RR", sig_b)], race_index=2)
+    assert entry.capacity == 2
+    # レース3: 2人同時出現が両方とも同じエントリに収まる
+    res = roster.resolve([Observation("RR", sig_a), Observation("RR", sig_b)])
+    assert res.entry_ids == [entry.id, entry.id]
