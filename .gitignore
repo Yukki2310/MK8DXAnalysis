@@ -6,6 +6,4 @@ screenshots/
 .pytest_cache/
 fixtures/frames/
 fixtures/*.mp4
-*.mp4test_data/
-
 test_data/
