@@ -1,12 +1,14 @@
-# コア（純ロジックのみなら不要）
+# 実行に必要なもの（配布版にも同梱される）
 numpy>=1.26
-opencv-python>=4.9
-# OCR
-paddleocr>=2.7
-paddlepaddle>=2.6  # GPU版を使う場合は paddlepaddle-gpu に差し替え
-# サーバー
+opencv-python-headless>=4.9
 fastapi>=0.110
-uvicorn[standard]>=0.29
+uvicorn>=0.29
 websockets>=12.0
-# テスト
-pytest>=8.0
+# Windows 標準OCR（新規選手の名前提案に使用。無くても動く）
+winrt-runtime>=2.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=2.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
+winrt-Windows.Globalization>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == "win32"

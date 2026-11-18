@@ -291,6 +291,8 @@ class Observation:
     flag: np.ndarray | None = None
     # 名前の文字マスク（identity.trim_mask の出力）。あれば画像照合を使う
     mask: np.ndarray | None = None
+    # 名前行クロップ（BGR）。新規選手の表示名を読むときだけ使う（保存しない）
+    image: np.ndarray | None = None
 
 
 @dataclass
@@ -307,6 +309,7 @@ class RosterEntry:
     pinned_name: str | None = None  # 事前登録された正規名（多数決で変えない）
     co_seen: set[int] = field(default_factory=set)  # 同じレースに同時出現した相手のID
     masks: list[np.ndarray] = field(default_factory=list)  # 文字マスク見本
+    name_reads: int = 0        # 表示名を文字認識で読んだ回数（上限あり）
     _prepared: list[np.ndarray] = field(default_factory=list, repr=False)
 
     def add_mask(self, mask: np.ndarray) -> bool:
@@ -342,6 +345,7 @@ class RosterEntry:
             "pinned_name": self.pinned_name,
             "co_seen": sorted(self.co_seen),
             "masks": [mask_to_dict(m) for m in self.masks],
+            "name_reads": self.name_reads,
         }
 
     @classmethod
@@ -358,6 +362,7 @@ class RosterEntry:
         entry.last_seen_race = int(data.get("last_seen_race", -1))
         entry.pinned_name = data.get("pinned_name")
         entry.co_seen = {int(x) for x in data.get("co_seen", [])}
+        entry.name_reads = int(data.get("name_reads", 0))
         entry.masks = [mask_from_dict(m) for m in data.get("masks", [])]
         entry._prepared = [prepare_mask(m) for m in entry.masks]
         return entry

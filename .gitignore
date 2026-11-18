@@ -7,3 +7,7 @@ screenshots/
 fixtures/frames/
 fixtures/*.mp4
 test_data/
+build/
+dist/
+.venv-build/
+*.egg-info/

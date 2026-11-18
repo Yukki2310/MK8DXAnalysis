@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0
+pyinstaller>=6.6
+# 評価用フレーム抽出（tools/extract_frames.py）のみ
+yt-dlp

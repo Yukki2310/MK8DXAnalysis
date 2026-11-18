@@ -21,18 +21,18 @@ from pydantic import BaseModel
 from . import db
 from .capture import VirtualCamera, grab_preview, list_cameras
 from .clustering import assign_teams
-from .ocr import OcrEngine
+from .namer import NameReader
+from .paths import data_dir, resource_path
 from .preprocess import load_roi_config
 from .processor import RaceProcessor
 from .roster import Observation, Roster
 from .runner import LiveRunner, save_outcome
-from .screenai import create_ocr_engine
 from .scoring import validate_scores
 from .state import MatchState
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-WEB_DIR = BASE_DIR / "web"
-DB_PATH = BASE_DIR / "data" / "mk8dx.db"
+WEB_DIR = resource_path("web")
+ROI_PATH = resource_path("config/roi_1080p.json")
+DB_PATH = data_dir() / "mk8dx.db"
 
 app = FastAPI(title="MK8DX Auto Scorer")
 
@@ -366,20 +366,20 @@ async def live_start(body: dict):
         global _runner
         conn = db.connect(DB_PATH)
         try:
-            ocr = create_ocr_engine()
-            _live_status["ocr_engine"] = (
-                "screenai" if ocr.using_screenai else "paddle"
-            )
-            roi = load_roi_config(str(BASE_DIR / "config" / "roi_1080p.json"))
+            # 同一人物の判定は画像照合。文字認識は新規選手の名前提案だけに使う
+            namer = NameReader()
+            _live_status["name_ocr"] = "windows-ocr" if namer.available else "none"
+            roi = load_roi_config(str(ROI_PATH))
             # 本登録の名簿がある場合は closed（消去法あり）、無い場合は
             # open で名簿を自動構築する（登録なし運用）
             has_confirmed = any(e.confirmed for e in _roster.entries)
             processor = RaceProcessor(
-                _roster, _match.format, assume_closed=has_confirmed  # type: ignore[union-attr]
+                _roster, _match.format, assume_closed=has_confirmed,  # type: ignore[union-attr]
+                namer=namer.read if namer.available else None,
             )
             runner = LiveRunner(
                 roi=roi,
-                ocr=ocr,
+                ocr=None,
                 processor=processor,
                 match=_match,  # type: ignore[arg-type]
                 conn=conn,

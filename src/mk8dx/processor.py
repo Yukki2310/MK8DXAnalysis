@@ -23,6 +23,9 @@ from .clustering import Assignment, assign_teams
 from .roster import Observation, Resolution, Roster
 from .scoring import points_for_rank
 
+MAX_CROPS = 3        # 順位ごとに保持する名前クロップの枚数
+MAX_NAME_READS = 3   # 1選手あたりの表示名の文字認識回数（多数決で安定させる）
+
 STATUS_CONFIRMED = "confirmed"
 STATUS_AWAITING_REVIEW = "awaiting_review"
 
@@ -55,17 +58,22 @@ class RaceProcessor:
         assume_closed: bool = False,
         min_frames: int = 2,
         stable_frames: int = 2,
+        namer=None,
     ) -> None:
         self.roster = roster
         self.format = fmt
         self.assume_closed = assume_closed
         self.min_frames = min_frames
         self.stable_frames = stable_frames
+        # namer: 名前クロップ群 -> 表示名 の関数（NameReader.read）。未指定なら
+        # 新規選手は「選手N」の仮名のままで、管理画面で名前を付ける
+        self.namer = namer
         self._race_index: int | None = None
         self._votes: list[Counter] = []       # 順位ごとの名前投票
         self._last_seen: list[dict[str, int]] = []  # 順位ごとの最終観測フレーム
         self._flags: list = []                # 順位ごとの国旗署名（最初の有効値）
         self._masks: list = []                # 順位ごとの文字マスク（最新の有効値）
+        self._crops: list = []                # 順位ごとの名前クロップ（最新3枚）
         self._frames_seen = 0
         self._last_signature: tuple | None = None
         self._stable_count = 0
@@ -77,6 +85,7 @@ class RaceProcessor:
         self._last_seen = [dict() for _ in range(12)]
         self._flags = [None] * 12
         self._masks = [None] * 12
+        self._crops = [[] for _ in range(12)]
         self._frames_seen = 0
         self._last_signature = None
         self._stable_count = 0
@@ -94,6 +103,8 @@ class RaceProcessor:
                 self._flags[i] = obs.flag
             if obs.mask is not None:
                 self._masks[i] = obs.mask
+            if obs.image is not None:
+                self._crops[i] = (self._crops[i] + [obs.image])[-MAX_CROPS:]
         self._frames_seen += 1
         signature = self._trial_signature()
         if signature is not None and signature == self._last_signature:
@@ -160,6 +171,8 @@ class RaceProcessor:
             resolution = self.roster.resolve(
                 consensus, assume_closed=self.assume_closed
             )
+        # 新規選手を含め、名前が未確定の選手を名付けてから結果を組み立てる
+        self._name_entries(resolution)
         outcome = self._build_outcome(consensus, resolution)
         if new_ids:
             outcome.problems.append(
@@ -168,6 +181,28 @@ class RaceProcessor:
             )
             outcome.status = "awaiting_review"
         return outcome
+
+    def _name_entries(self, resolution: Resolution) -> None:
+        """表示名が未確定の選手を文字認識で名付ける（同じ選手は1レース1回）。"""
+        if self.namer is None:
+            return
+        done: set[int] = set()
+        for row, entry_id in enumerate(resolution.entry_ids):
+            if entry_id is None or entry_id in done or resolution.low_confidence[row]:
+                continue
+            entry = self.roster._entry_by_id(entry_id)
+            if (entry is None or entry.pinned_name
+                    or entry.name_reads >= MAX_NAME_READS
+                    or not self._crops[row]):
+                continue
+            done.add(entry_id)
+            try:
+                text = self.namer(list(self._crops[row]))
+            except Exception:
+                text = ""
+            entry.name_reads += 1
+            if text:
+                entry.variants[text] += 1
 
     def process_single(self, observations: list[Observation],
                        race_index: int) -> RaceOutcome:
@@ -198,6 +233,7 @@ class RaceProcessor:
                 "raw_name": obs.name,
                 "resolved_name": resolved[i],
                 "score": points_for_rank(rank),
+                "entry_id": resolution.entry_ids[i],
                 "low_confidence": resolution.low_confidence[i],
             })
 

@@ -31,14 +31,16 @@ import numpy as np
 from . import db
 from .detector import looks_like_result
 from .pipeline import (
+    PHASE_RACE_RESULT,
     PHASE_STANDINGS,
+    PHASE_UNKNOWN,
     StandingsReading,
     analyze_standings_frame,
-    classify_phase,
     extract_observations,
-    verify_result_candidate,
+    looks_like_standings,
 )
 from .processor import RaceOutcome, RaceProcessor
+from .rankcheck import SCORE_INK_MIN_PIXELS, score_column_ink, verify_result_candidate
 from .roster import Observation
 from .state import MatchState, Phase
 
@@ -90,7 +92,8 @@ class LiveRunner:
     session_id: str
     on_event: Callable[[str, dict], None] | None = None
     # 差し替え可能にしてテストではフェイクを使う
-    classify_fn: Callable = classify_phase
+    # None のときは既定の判別（_default_classify: 加算表示の有無と累計の並び）
+    classify_fn: Callable | None = None
     observations_fn: Callable = extract_observations
     standings_fn: Callable = analyze_standings_frame
     result_like_fn: Callable = looks_like_result
@@ -101,6 +104,7 @@ class LiveRunner:
     cross_check_problems: list[str] | None = None
     _gone_count: int = 0
     _computed_totals: dict[str, int] = field(default_factory=dict)
+    _totals_by_id: dict[int, int] = field(default_factory=dict)
     _last_completed_race: int | None = None
     _cross_checked_race: int | None = None
     _last_classify_at: float = -10.0
@@ -148,7 +152,7 @@ class LiveRunner:
 
     def _finalize(self, frame: np.ndarray, now: float) -> None:
         # 安全弁: 最終フレームが累計画面ならレースとして処理しない
-        phase = self.classify_fn(frame, self.roi, self.ocr)
+        phase = self._classify(frame)
         if phase == PHASE_STANDINGS:
             self.match.on_screen_gone()
             self._try_cross_check(frame, now)
@@ -184,13 +188,14 @@ class LiveRunner:
             return
         if self._cross_checked_race == self._last_completed_race:
             return
-        if self.classify_fn(frame, self.roi, self.ocr) != PHASE_STANDINGS:
+        if self._classify(frame) != PHASE_STANDINGS:
             return
         reading = self.standings_fn(frame, self.roi, self.ocr)
         resolved_reading = self._resolve_standings(reading)
         from .pipeline import cross_check_standings
 
-        problems = cross_check_standings(self._computed_totals, resolved_reading)
+        problems = cross_check_standings(
+            self._current_totals(), resolved_reading)
         self.cross_check_problems = problems
         self._cross_checked_race = self._last_completed_race
         if problems:
@@ -203,7 +208,10 @@ class LiveRunner:
 
     def _resolve_standings(self, reading: StandingsReading) -> StandingsReading:
         """照合用にフェーズBの名前を選手名簿で名寄せする（学習なし）。"""
-        observations = [Observation(name=e["name"]) for e in reading.entries]
+        observations = [
+            Observation(name=e["name"], flag=e.get("flag"), mask=e.get("mask"))
+            for e in reading.entries
+        ]
         resolution = self.processor.roster.resolve(observations)
         names = self.processor.roster.resolved_names(resolution)
         entries = []
@@ -218,7 +226,49 @@ class LiveRunner:
                 self._computed_totals[name] = (
                     self._computed_totals.get(name, 0) + e["score"]
                 )
+            entry_id = e.get("entry_id")
+            if entry_id is not None:
+                self._totals_by_id[entry_id] = (
+                    self._totals_by_id.get(entry_id, 0) + e["score"]
+                )
         self._last_completed_race = outcome.race_index
+
+    def _current_totals(self) -> dict[str, int]:
+        """名前->累計点。選手名の変更に追従するため entry_id ベースで組む。"""
+        if not self._totals_by_id:
+            return dict(self._computed_totals)
+        totals: dict[str, int] = {}
+        for entry_id, total in self._totals_by_id.items():
+            entry = self.processor.roster._entry_by_id(entry_id)
+            if entry is not None:
+                name = entry.canonical_name
+                totals[name] = totals.get(name, 0) + total
+        return totals
+
+    def _classify(self, frame: np.ndarray) -> str:
+        if self.classify_fn is not None:
+            return self.classify_fn(frame, self.roi, self.ocr)
+        return self._default_classify(frame)
+
+    def _default_classify(self, frame: np.ndarray) -> str:
+        """ゴール順画面か累計画面かを判別する（OCRなし）。
+
+        1. スコア列に加算表示（明るい筆画）があればゴール順画面。
+        2. 無い場合、各行を名簿で名寄せし、行順の自前累計が降順なら累計画面。
+        3. どちらとも言えなければ unknown（集計は止めない）。
+        """
+        if score_column_ink(frame, self.roi) >= SCORE_INK_MIN_PIXELS:
+            return PHASE_RACE_RESULT
+        observations = self.observations_fn(frame, self.roi, self.ocr)
+        roster = self.processor.roster
+        resolution = roster.resolve(observations)
+        totals = [
+            self._totals_by_id.get(entry_id) if entry_id is not None else None
+            for entry_id in resolution.entry_ids
+        ]
+        if looks_like_standings(totals):
+            return PHASE_STANDINGS
+        return PHASE_UNKNOWN
 
     # -- 承認フロー --------------------------------------------------
     def approve_pending(self, now: float | None = None) -> bool:

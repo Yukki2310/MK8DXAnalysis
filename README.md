@@ -1,62 +1,92 @@
 # MK8DXAnalysis
 
-マリオカート8 デラックスのレース映像（OBS仮想カメラ）からリザルト画面をOCRで読み取り、
+マリオカート8 デラックスのレース映像（OBS仮想カメラ）からリザルト画面を自動検知し、
 チーム得点を自動集計してOBSオーバーレイ（ブラウザソース）へリアルタイム反映するシステム。
 
-設計書: `docs/design.md`（リポジトリ外で共有された詳細設計書の要点を実装に反映）
+設計書: `docs/design.md`（初期の設計。実装は下記の「方式」に変更済み）
+
+## 方式（v0.2）
+
+汎用OCR（PaddleOCR・Chrome Screen AI）では、ゲーム独自フォントと半透明パネルのため
+名前の読みがフレームごとに揺れ、同一人物を別人として記録してしまった。そこで
+**名前を文字列として読んで名寄せする方式をやめた**。
+
+- **同一人物の判定は画像で行う**（`identity.py`）: 名前行から文字だけを取り出した
+  二値マスク同士の類似度で照合する。背景（コース映像）に依存せず、順位が入れ替わっても追える。
+- **順位は固定フォントなのでテンプレート照合**（`rankcheck.py`）: コース選択画面などの誤検知を棄却する。
+- **ゴール順画面／累計画面の判別**: スコア列の加算表示（`+N`）の有無と、
+  行の並びが自前累計の降順かどうかで判定（`runner.py`）。
+- **文字認識は新規選手の名前提案だけ**（`namer.py`）: Windows 標準OCR（日本語＋英語）で読み、
+  管理画面で直せば固定される。OCRが使えない環境では「選手N」の仮名で動く。
+- 得点は順位から配点表で確定する（OCRしない）。82点検証あり。
 
 ## 構成
 
 ```
-config/roi_1080p.json      リザルト画面の関心領域(ROI)定義 ※実キャプチャで要校正
+config/roi_1080p.json      リザルト画面の関心領域(ROI)定義（行ピッチ78px）
+assets/rank_templates.npz  順位列テンプレート（tools/build_rank_templates.py で生成）
 src/mk8dx/
-  scoring.py               配点テーブルと82点バリデーション（純ロジック）
-  tags.py                  タグ正規化（大小同一視・ひらがな/カタカナ同一視・濁音区別・分音記号検知）
-  clustering.py            人数制約を使ったチーム自動判定（純ロジック）
-  state.py                 レース進行の状態遷移（WAITING_RACE→DETECTING→PROCESSING→COOLDOWN）
-  db.py                    SQLiteスキーマと集計クエリ
-  preprocess.py            ROI切り出しと画像前処理（OpenCV）
-  ocr.py                   PaddleOCRラッパー（スコアは数字のみに制限）
-  detector.py              リザルト画面検知（テンプレート照合＋静止判定）
-  capture.py               OBS仮想カメラ入力（OpenCV VideoCapture）
-  server.py                FastAPI + WebSocket（STATE_UPDATE / ALERT 配信、管理画面コマンド受付）
+  __main__.py              起動エントリ（サーバー起動＋管理画面を開く、--selfcheck）
+  paths.py                 開発時／配布版のパス解決（データは %APPDATA%\MK8DXAnalysis）
+  identity.py              文字マスク抽出と距離計算（画像ベース識別）
+  rankcheck.py             順位列テンプレートによるリザルト画面検証
+  roster.py                選手名簿（画像距離＋国旗で一括割り当て、多数決、永続化）
+  namer.py / winocr.py     新規選手の名前提案（Windows標準OCR）
+  processor.py             複数フレームの観測蓄積→確定→チーム判定
+  runner.py                ライブランナー（検知→確定→保存→累計照合、承認フロー）
+  pipeline.py              フレームから観測（マスク・国旗）を抽出、累計クロスチェック
+  scoring.py / tags.py / clustering.py   配点・タグ正規化・チーム判定（純ロジック）
+  state.py / db.py         状態遷移とSQLite
+  capture.py               OBS仮想カメラ入力
+  server.py                FastAPI + WebSocket
 web/overlay.html           OBSブラウザソース用オーバーレイ（背景透過）
-web/admin.html             管理画面（モニター・修正・進行コントロール）
-tools/step1_check.py       ステップ1検証: 静止画1枚 → ROI/OCR → 集計までを通すCLI
-tests/                     純ロジックの単体テスト（画像なしで実行可能）
+web/admin.html             管理画面（モニター・選手名簿・承認・カメラ選択）
+installer/                 PyInstaller spec / Inno Setup / ビルドスクリプト
+tools/                     extract_frames, build_rank_templates, identity_check, step8_check, run_video
+tests/                     単体テスト（画像・OCR不要）
 ```
 
-## 実装状況
+## 使い方（配布版）
 
-- [x] 純ロジック（配点・検証、タグ正規化、チーム判定、状態遷移、DB）＋単体テスト
-- [x] 画像処理・OCR・検知・キャプチャ・サーバーの骨格
-- [x] ステップ1: 実キャプチャ2枚でROI校正とOCR検証を実施（詳細: `docs/step1-notes.md`）
-  - 2フェーズ（ゴール順／累計順位）の判別OK。名前OCRは12名中9〜11名が完全一致
-  - スコア列の数字はセグメントフォントでOCRが安定しないため、スコアは順位から
-    規定配点表で確定する方式に変更（OCRはクロスチェック専用）
-- [x] ステップ2: 動画（ラウンジ実況）で検知・フェーズ判別・OCRを検証（`docs/step2-notes.md`）
-- [x] ステップ3: 選手名簿照合（重み付き編集距離＋国旗署名＋一括割り当て＋多数決）を実装・検証（`docs/step3-notes.md`）。実運用は事前登録選手名簿が本命
-- [x] ステップ4: RaceProcessor（複数フレーム多数決＋割り当て安定判定→確定/要確認の振り分け）と管理画面の選手名簿登録UI（`docs/step4-notes.md`）
-- [x] ステップ5: ライブランナー（候補検出→確定→保存→フェーズB照合）、承認フロー、管理画面のライブ操作（`docs/step5-notes.md`）。実動画でのエンドツーエンド検証済み
-- [x] ステップ6: 登録なし運用（選手名簿の自動構築の強化＋DB永続化＋名前変更）、カメラソースのプレビュー選択UI（`docs/step6-notes.md`）。最難ケースの実動画では完全無人集計には届かず、名簿の手直し併用が現実解
-- [ ] 実機（OBS仮想カメラ＋Switch実況）での通し確認と検知周期・OCR負荷の実測
+インストーラ（または zip）で導入し、`MK8DXAnalysis.exe` を起動する。
+管理画面が開く。OBS のブラウザソースには表示されたオーバーレイURL
+（既定 `http://localhost:8000/overlay`）を指定する。
 
-## セットアップ
+1. 管理画面で対戦形式を選んでセッション開始。
+2. OBS の仮想カメラを開始し、「カメラソース」でプレビューを見て仮想カメラを選ぶ。
+3. 「ライブ開始」。レースが自動で検知・集計される。
+4. 最初のレースで選手が自動登録される。**選手名簿で名前を正しい表記（チームタグが先頭に来る形）に
+   直す**とチーム判定が成立する。名前が読めなかった選手は「選手N」と表示されるので、同じく直す。
+5. 要確認のレースは管理画面で承認／破棄する。
 
-```bash
-pip install -r requirements.txt
-python -m pytest tests/        # 純ロジックのテスト（重い依存なしで実行可）
-python tools/step1_check.py result.png --format 2v2   # 静止画でのOCR検証
-uvicorn mk8dx.server:app --app-dir src --port 8000    # サーバー起動
+## 開発
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest tests
+.venv\Scripts\python -m mk8dx                      # サーバー起動
+.venv\Scripts\python tools\run_video.py --auto-approve clip1.mp4 clip2.mp4   # 動画で通し確認
 ```
 
-OBSのブラウザソースには `http://localhost:8000/overlay` 、
-管理画面は `http://localhost:8000/admin` を開く。
+配布物のビルド（PyInstaller onedir ＋ Inno Setup。Inno Setup が無ければ zip）:
 
-運用の流れ: 管理画面で対戦形式を選んでセッション開始 → OBS仮想
-カメラを開始し、「カメラソース」でプレビューを見て仮想カメラを
-選ぶ → 管理画面の「ライブ開始」。選手名簿はレースを重ねると自動で
-構築され、DBに保存される（事前登録しておくと初回から精度が上がる。
-自動登録された名前は管理画面で変更・削除できる）。
-レースが自動で集計され、要確認のレースは管理画面で承認/破棄する。
-ライブ開始の初回はPaddleOCRのモデルダウンロードで少し待つ。
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
+dist\MK8DXAnalysis\MK8DXAnalysis.exe --selfcheck
+```
+
+評価用フレームの用意: `tools/extract_frames.py`（yt-dlp / ffmpeg が必要）。動画とフレームは
+`.gitignore` 対象。ROI を変えたら `tools/build_rank_templates.py` で順位テンプレートを作り直す。
+
+## 実装状況と既知の制約
+
+- [x] 画像ベース識別、順位テンプレート検証、加算表示／並び順によるフェーズ判別
+- [x] Windows標準OCRによる名前提案、Paddle/Screen AI 依存の除去
+- [x] PyInstaller 配布版（selfcheck とサーバー応答を確認）、Inno Setup スクリプト
+- [ ] 実機（OBS仮想カメラ＋Switch実況）での通し確認。検証は YouTube 動画（圧縮映像）のみ
+- 1080p 前提のROI。別解像度は 1920x1080 へ拡大縮小して入力する想定（未対応）
+- 'racist #1' と '#2' のような酷似名は、画像距離の差が小さく最も弱い
+- 日本語版ゲーム画面のみ対象。同名同旗の複数人は1エントリとして扱う
+- 配布版は未署名のため、初回起動時に SmartScreen の警告が出ることがある
+- `docs/step*-notes.md` は旧方式（OCR）時代の検証記録。経緯として残している
