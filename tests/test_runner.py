@@ -128,3 +128,32 @@ def test_standings_first_is_not_processed_as_race(tmp_path):
     assert runner.last_outcome is None
     assert runner.match.phase is Phase.WAITING_RACE
     assert db.standings(runner.conn, runner.session_id) == []
+
+
+def test_undo_last_race(tmp_path):
+    script = Script(ORDER)
+    runner = make_runner(tmp_path, script)
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    runner.step(FRAME, now=0.8)
+    assert runner.match.current_race == 1
+    assert runner.undo_last_race()
+    assert runner.match.current_race == 0
+    assert runner.match.phase is Phase.WAITING_RACE
+    assert db.valid_rows(runner.conn, runner.session_id) == []
+    assert not runner.undo_last_race()  # 取り消せるものがもう無い
+
+
+def test_pending_payload_reports_what_to_fix(tmp_path):
+    noisy = list(ORDER)
+    noisy[9] = "今ねえあまあ!"
+    noisy[11] = "-"
+    script = Script(noisy)
+    runner = make_runner(tmp_path, script)
+    script.like = True
+    runner.step(FRAME, now=0.4)
+    runner.step(FRAME, now=0.8)
+    payload = runner.pending_payload()
+    assert payload is not None
+    assert all("entry_id" in e for e in payload["entries"])
+    assert payload["can_approve"] == (payload["todo"] == [])

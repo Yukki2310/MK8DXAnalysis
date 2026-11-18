@@ -20,6 +20,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from .clustering import Assignment, assign_teams
+from .teams import group_by_labels
 from .roster import Observation, Resolution, Roster
 from .scoring import points_for_rank
 
@@ -176,8 +177,8 @@ class RaceProcessor:
         outcome = self._build_outcome(consensus, resolution)
         if new_ids:
             outcome.problems.append(
-                f"選手名簿に新規の選手が{len(new_ids)}名登録されました"
-                "（自動登録の内容を確認してください）"
+                f"初めて見る選手が{len(new_ids)}名います。"
+                "名前とチームを確認してください"
             )
             outcome.status = "awaiting_review"
         return outcome
@@ -211,6 +212,47 @@ class RaceProcessor:
         self.add_frame(observations)
         return self.finalize(force=True)
 
+    def team_problems(self, entry_ids: list[int | None]) -> list[str]:
+        """現在の選手名簿で12人のチーム分けが成立するかを調べる（成立なら空）。
+
+        管理画面で「確定する」を押せるかの判定にも使う。名前やチームを
+        直した直後の状態で再評価できるよう、結果は保存せず毎回計算する。
+        """
+        entries = [
+            self.roster._entry_by_id(i) if i is not None else None
+            for i in entry_ids
+        ]
+        if any(e is None for e in entries):
+            return ["選手を特定できていない順位があります"]
+        return group_by_labels([e.team for e in entries], self.format).warnings
+
+    def _assign(self, resolution: Resolution) -> Assignment | None:
+        """チーム分けを決める。全員にチームが設定済みならそれを使い、
+        そうでなければ名前の先頭文字から推定して、未設定の選手に
+        提案（自動）として書き込む。"""
+        entries = [
+            self.roster._entry_by_id(i) if i is not None else None
+            for i in resolution.entry_ids
+        ]
+        if any(e is None for e in entries):
+            return None
+        if all(e.team for e in entries):  # type: ignore[union-attr]
+            return group_by_labels([e.team for e in entries], self.format)  # type: ignore[union-attr]
+        names = [e.canonical_name for e in entries]  # type: ignore[union-attr]
+        guess = assign_teams(names, self.format)
+        if guess.valid:
+            had_labels = any(e.team for e in entries)  # type: ignore[union-attr]
+            for team in guess.teams:
+                for idx in team.members:
+                    entry = entries[idx]
+                    if entry is not None and not entry.team:
+                        self.roster.set_team(entry.id, team.tag, manual=False)
+            if had_labels:
+                # 設定済みの選手が混ざっている場合は、その組み合わせで成立するか検証する
+                return group_by_labels(
+                    [e.team for e in entries], self.format)  # type: ignore[union-attr]
+        return guess
+
     def _build_outcome(
         self, consensus: list[Observation], resolution: Resolution
     ) -> RaceOutcome:
@@ -221,12 +263,10 @@ class RaceProcessor:
         for i, obs in enumerate(consensus):
             rank = i + 1
             if resolved[i] is None:
-                problems.append(
-                    f"{rank}位の名前を選手名簿と照合できませんでした: {obs.name!r}"
-                )
+                problems.append(f"{rank}位の選手を特定できませんでした")
             if resolution.low_confidence[i]:
                 problems.append(
-                    f"{rank}位は消去法での割り当てのため要確認です: {obs.name!r}"
+                    f"{rank}位は消去法で選手を決めたため、確認が必要です"
                 )
             entries.append({
                 "rank": rank,
@@ -238,10 +278,9 @@ class RaceProcessor:
             })
 
         teams: list[dict] = []
-        assignment: Assignment | None = None
-        if all(n is not None for n in resolved):
-            assignment = assign_teams(list(resolved), self.format)  # type: ignore[arg-type]
-            warnings.extend(assignment.warnings)
+        assignment = self._assign(resolution)
+        if assignment is not None:
+            warnings.extend(w for w in assignment.warnings)
             if assignment.valid:
                 for team in assignment.teams:
                     members = [m + 1 for m in team.members]
@@ -252,7 +291,9 @@ class RaceProcessor:
                         "points": sum(points_for_rank(r) for r in members),
                     })
             else:
-                problems.append("チーム割り当てが人数制約を満たしませんでした")
+                problems.append(
+                    "チーム分けを決められませんでした。選手ごとにチームを設定してください"
+                )
         status = STATUS_CONFIRMED if not problems else STATUS_AWAITING_REVIEW
         return RaceOutcome(
             status=status,

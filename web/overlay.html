@@ -2,56 +2,168 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>MK8DX Overlay</title>
+<title>順位表オーバーレイ</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  html, body { margin: 0; padding: 0; background: transparent; font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", sans-serif; }
-  #board { position: absolute; top: 24px; right: 24px; width: 340px; color: #fff; }
-  #race { font-size: 20px; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,.8); margin-bottom: 8px; }
-  .row { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,.55);
-         border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; }
-  .bar { width: 8px; align-self: stretch; border-radius: 4px; }
-  .rank { font-weight: 700; width: 22px; text-align: center; }
-  .tag { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .total { font-size: 20px; font-weight: 800; }
-  .diff { width: 52px; text-align: right; opacity: .85; font-size: 13px; }
-  .last { width: 44px; text-align: right; font-size: 13px; color: #ffd94d; }
-  .flash { animation: flash .8s ease; }
-  @keyframes flash { 0% { background: rgba(255,217,77,.75); } 100% { background: rgba(0,0,0,.55); } }
+  /* OBS のブラウザソース用。背景は完全に透明。
+     URL の ?pos=（tl / tr / bl / br）と ?size=（s / m / l）で位置と大きさを変えられる。 */
+  :root {
+    --row-h: 62px;
+    --gap: 8px;
+    --panel: rgba(12, 15, 26, 0.80);
+    --text: #ffffff;
+    --accent: #ffd94d;
+  }
+  html, body {
+    margin: 0; padding: 0; background: transparent; overflow: hidden;
+    font-family: "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
+    color: var(--text);
+  }
+  #board {
+    position: fixed; width: 420px; margin: 28px;
+    transform-origin: top right;
+  }
+  body[data-pos="tl"] #board { top: 0; left: 0; transform-origin: top left; }
+  body[data-pos="tr"] #board { top: 0; right: 0; transform-origin: top right; }
+  body[data-pos="bl"] #board { bottom: 0; left: 0; transform-origin: bottom left; }
+  body[data-pos="br"] #board { bottom: 0; right: 0; transform-origin: bottom right; }
+
+  #head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 0 6px 10px;
+    text-shadow: 0 2px 6px rgba(0, 0, 0, .9);
+  }
+  #race { font-size: 26px; font-weight: 800; letter-spacing: .04em; }
+  #race small { font-size: 16px; font-weight: 600; opacity: .85; margin-left: 4px; }
+  #sub { font-size: 14px; opacity: .85; }
+
+  #rows { position: relative; transition: height .5s ease; }
+  .row {
+    position: absolute; left: 0; right: 0; height: var(--row-h);
+    display: flex; align-items: center; gap: 12px; box-sizing: border-box;
+    padding: 0 14px 0 0; overflow: hidden;
+    background: var(--panel); border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .35);
+    transition: transform .6s cubic-bezier(.3, .8, .3, 1), opacity .4s ease;
+  }
+  .row .bar { width: 10px; align-self: stretch; flex: none; }
+  .row .rank { width: 30px; text-align: center; font-size: 26px; font-weight: 800; flex: none; }
+  .row .name {
+    flex: 1; min-width: 0; font-size: 24px; font-weight: 700;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .row .gain {
+    font-size: 18px; font-weight: 800; color: var(--accent);
+    opacity: 0; transition: opacity .6s ease; min-width: 48px; text-align: right;
+  }
+  .row .gain.show { opacity: 1; }
+  .row .total { font-size: 32px; font-weight: 800; min-width: 62px; text-align: right;
+                font-variant-numeric: tabular-nums; }
+  .row .diff { font-size: 14px; opacity: .75; min-width: 44px; text-align: right;
+               font-variant-numeric: tabular-nums; }
+  .row.first { background: linear-gradient(90deg, rgba(60, 48, 8, .88), rgba(12, 15, 26, .80)); }
+  .row.first .rank { color: var(--accent); }
+  .row.enter { opacity: 0; }
 </style>
 </head>
-<body>
+<body data-pos="tr">
 <div id="board">
-  <div id="race">Race - / 12</div>
+  <div id="head">
+    <div id="race">RACE <span id="raceNow">-</span><small>/ <span id="raceMax">12</span></small></div>
+    <div id="sub"></div>
+  </div>
   <div id="rows"></div>
 </div>
+
 <script>
+  'use strict';
+  const params = new URLSearchParams(location.search);
+  const pos = ['tl', 'tr', 'bl', 'br'].includes(params.get('pos')) ? params.get('pos') : 'tr';
+  const scale = { s: 0.8, m: 1, l: 1.25 }[params.get('size')] || 1;
+  document.body.dataset.pos = pos;
+  document.getElementById('board').style.transform = `scale(${scale})`;
+
+  const ROW_H = 62, GAP = 8;
   const rowsEl = document.getElementById('rows');
-  const raceEl = document.getElementById('race');
-  let prevTotals = {};
-  function render(state) {
-    if (!state) return;
-    const m = state.match;
-    if (m) raceEl.textContent = `Race ${Math.min(m.current_race + 1, m.total_races)} / ${m.total_races}`;
-    rowsEl.innerHTML = '';
-    for (const t of state.standings || []) {
-      const row = document.createElement('div');
-      row.className = 'row' + (prevTotals[t.tag] !== undefined && prevTotals[t.tag] !== t.total ? ' flash' : '');
-      row.innerHTML = `<div class="bar" style="background:${t.color || '#888'}"></div>
-        <div class="rank">${t.rank}</div><div class="tag">${t.tag}</div>
-        <div class="last">+${t.last_race_points}</div>
-        <div class="total">${t.total}</div>
-        <div class="diff">${t.diff_from_top === 0 ? '' : t.diff_from_top}</div>`;
-      rowsEl.appendChild(row);
-      prevTotals[t.tag] = t.total;
+  const nodes = new Map();          // チーム名 -> 行の要素
+  const shown = new Map();          // チーム名 -> 画面に表示中の合計点
+  const gainTimers = new Map();
+  let initialized = false;          // 最初の描画では加点表示やカウントアップをしない
+
+  function animateNumber(node, from, to) {
+    const start = performance.now(), dur = 700;
+    function tick(now) {
+      const t = Math.min(1, (now - start) / dur);
+      node.textContent = Math.round(from + (to - from) * (1 - Math.pow(1 - t, 3)));
+      if (t < 1) requestAnimationFrame(tick);
     }
+    requestAnimationFrame(tick);
   }
+
+  function makeRow() {
+    const row = document.createElement('div');
+    row.className = 'row enter';
+    row.innerHTML = '<div class="bar"></div><div class="rank"></div><div class="name"></div>' +
+      '<div class="gain"></div><div class="total">0</div><div class="diff"></div>';
+    return row;
+  }
+
+  function render(state) {
+    const m = state.match;
+    const finished = m && m.phase === 'FINISHED';
+    document.getElementById('raceNow').textContent = m ? (finished ? m.total_races : m.next_race) : '-';
+    document.getElementById('raceMax').textContent = m ? m.total_races : 12;
+    document.getElementById('sub').textContent = finished ? '最終結果' : '';
+
+    const teams = state.standings || [];
+    const seen = new Set();
+    teams.forEach((t, i) => {
+      seen.add(t.tag);
+      let row = nodes.get(t.tag);
+      if (!row) {
+        row = makeRow();
+        nodes.set(t.tag, row);
+        rowsEl.appendChild(row);
+        row.style.transform = `translateY(${i * (ROW_H + GAP)}px)`;
+        requestAnimationFrame(() => requestAnimationFrame(() => row.classList.remove('enter')));
+      }
+      row.classList.toggle('first', t.rank === 1);
+      row.querySelector('.bar').style.background = t.color || '#888';
+      row.querySelector('.rank').textContent = t.rank;
+      row.querySelector('.name').textContent = t.tag;
+      row.querySelector('.diff').textContent = t.diff_from_top === 0 ? '' : t.diff_from_top;
+      row.style.transform = `translateY(${i * (ROW_H + GAP)}px)`;
+
+      const totalEl = row.querySelector('.total');
+      const prev = shown.has(t.tag) ? shown.get(t.tag) : 0;
+      if (prev !== t.total) {
+        if (initialized) animateNumber(totalEl, prev, t.total);
+        else totalEl.textContent = t.total;
+        if (initialized) {
+          const gain = row.querySelector('.gain');
+          gain.textContent = '+' + (t.total - prev);
+          gain.classList.add('show');
+          clearTimeout(gainTimers.get(t.tag));
+          gainTimers.set(t.tag, setTimeout(() => gain.classList.remove('show'), 8000));
+        }
+        shown.set(t.tag, t.total);
+      }
+    });
+    for (const [tag, row] of [...nodes]) {
+      if (!seen.has(tag)) { row.remove(); nodes.delete(tag); shown.delete(tag); }
+    }
+    initialized = true;
+    rowsEl.style.height = Math.max(0, teams.length * (ROW_H + GAP) - GAP) + 'px';
+  }
+
   function connect() {
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'STATE_UPDATE') render(msg);
     };
-    ws.onclose = () => setTimeout(connect, 2000);
+    ws.onclose = () => setTimeout(connect, 2000);   // 切れても表示は保ち、つなぎ直す
   }
   connect();
 </script>

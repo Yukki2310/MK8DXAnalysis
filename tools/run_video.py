@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import cv2  # noqa: E402
 
-from mk8dx import db  # noqa: E402
+from mk8dx import db, standings  # noqa: E402
 from mk8dx.namer import NameReader  # noqa: E402
 from mk8dx.preprocess import load_roi_config  # noqa: E402
 from mk8dx.processor import RaceProcessor  # noqa: E402
@@ -85,12 +85,11 @@ def main() -> None:
             print("警告:", payload.get("message"), payload.get("problems", ""))
         elif kind == "cross_check":
             print("累計照合:", payload.get("problems") or "一致")
-    for team in db.standings(conn, session_id):
-        print(team)
+    for team in standings.compute(db.valid_rows(conn, session_id), roster):
+        print(f"{team['rank']}位 {team['tag']}: {team['total']}点 {team['members']}")
     print("\n選手名簿:")
     for e in roster.entries:
-        print(f"  #{e.id} {e.canonical_name!r} 出現{e.races_seen}回 "
-              f"{'本登録' if e.confirmed else '仮登録'}")
+        print(f"  #{e.id} {e.canonical_name!r} チーム={e.team!r} 出現{e.races_seen}回")
 
 
 if __name__ == "__main__":

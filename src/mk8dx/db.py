@@ -47,7 +47,18 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """旧バージョンのDBに新しい列を足す。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(player_scores)")}
+    if "entry_id" not in cols:
+        # 選手名簿のエントリID。チームは名簿から後で引くため、チームの
+        # 付け替えが過去のレースにも反映される
+        conn.execute("ALTER TABLE player_scores ADD COLUMN entry_id INTEGER")
+        conn.commit()
 
 
 def save_roster_data(conn: sqlite3.Connection, data: dict) -> None:
@@ -129,8 +140,8 @@ def save_race_result(
     race_result_id = int(cur.lastrowid)
     conn.executemany(
         "INSERT INTO player_scores"
-        " (race_result_id, rank, player_name, team_id, score, raw_ocr_text)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
+        " (race_result_id, rank, player_name, team_id, score, raw_ocr_text,"
+        " entry_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             (
                 race_result_id,
@@ -139,6 +150,7 @@ def save_race_result(
                 e.get("team_id"),
                 e["score"],
                 e.get("raw_ocr_text"),
+                e.get("entry_id"),
             )
             for e in entries
         ],
@@ -176,6 +188,50 @@ def race_result_entries(conn: sqlite3.Connection, race_result_id: int) -> list[d
         (race_result_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def valid_rows(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    """確定済みレースの全選手行（レース番号・順位・点・名簿エントリID）。"""
+    rows = conn.execute(
+        """
+        SELECT rr.id AS race_result_id, rr.race_number, ps.rank, ps.score,
+               ps.entry_id, ps.player_name
+        FROM player_scores ps
+        JOIN race_results rr ON rr.id = ps.race_result_id
+        WHERE rr.session_id = ? AND rr.is_valid = 1
+        ORDER BY rr.race_number, ps.rank
+        """,
+        (session_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def latest_session(conn: sqlite3.Connection) -> dict | None:
+    """最後に作られたセッション（アプリ再起動後に試合を再開するため）。
+
+    確定済みレース数（完了レース数）も付けて返す。
+    """
+    row = conn.execute(
+        "SELECT id, format, total_races FROM sessions"
+        " ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    count = conn.execute(
+        "SELECT COUNT(*) AS c FROM race_results WHERE session_id = ? AND is_valid = 1",
+        (row["id"],),
+    ).fetchone()["c"]
+    return {**dict(row), "completed": int(count)}
+
+
+def last_valid_race_result(conn: sqlite3.Connection, session_id: str) -> int | None:
+    """最後に確定したレースの race_result_id（無ければ None）。"""
+    row = conn.execute(
+        "SELECT id FROM race_results WHERE session_id = ? AND is_valid = 1"
+        " ORDER BY race_number DESC, id DESC LIMIT 1",
+        (session_id,),
+    ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def standings(conn: sqlite3.Connection, session_id: str) -> list[dict]:

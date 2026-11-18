@@ -1,10 +1,11 @@
-"""FastAPI + WebSocket サーバー（設計書 6 / 7）。
+"""FastAPI + WebSocket サーバー。
 
-配信イベント: STATE_UPDATE（全体状態）, ALERT（要手動確認の警告）
-管理コマンド: CORRECT_SCORE, RENAME_TEAM, SET_RACE, RESET_MATCH
+- 管理画面（/admin）と OBS オーバーレイ（/overlay）の2画面を配信する。
+- 状態はすべて WebSocket（/ws）で全クライアントへ送る（STATE_UPDATE）。
+- 管理画面からの操作は REST（/api/...）で受ける。
 
-開発・検証用に POST /api/simulate_result を用意している。カメラやOCRなしで
-「名前12名＋スコア」を投入し、集計→配信までを通して確認できる。
+試合の状態（形式・完了レース数）はDBから復元できるので、アプリを
+再起動しても直前の試合を続けられる。
 """
 from __future__ import annotations
 
@@ -12,22 +13,19 @@ import asyncio
 import json
 import threading
 import time
-from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 
-from . import db
+from . import db, standings
 from .capture import VirtualCamera, grab_preview, list_cameras
-from .clustering import assign_teams
+from .clustering import FORMATS
 from .namer import NameReader
 from .paths import data_dir, resource_path
 from .preprocess import load_roi_config
 from .processor import RaceProcessor
-from .roster import Observation, Roster
-from .runner import LiveRunner, save_outcome
-from .scoring import validate_scores
+from .roster import Roster
+from .runner import LiveRunner
 from .state import MatchState
 
 WEB_DIR = resource_path("web")
@@ -40,15 +38,19 @@ _conn = None
 _match: MatchState | None = None
 _session_id: str | None = None
 _clients: set[WebSocket] = set()
-_lock = asyncio.Lock()
-
-# 選手名簿はセッションをまたいで保持する（選手登録はマッチごとではなく
-# グループ単位の情報のため）。プロセッサは形式が変わったら作り直す。
+# 選手名簿はセッションをまたいで保持する（同じメンバーで何試合もやるため）
 _roster = Roster()
+# ライブ処理スレッドと管理画面の操作が選手名簿・状態を同時に触らないための鍵
+_lock = threading.RLock()
+
+_runner: LiveRunner | None = None
+_live_thread: threading.Thread | None = None
+_live_stop = threading.Event()
+_live_status: dict = {"running": False, "error": None, "name_ocr": None}
 
 
+# -- 永続化・復元 ------------------------------------------------------
 def _persist_roster() -> None:
-    """選手名簿をDBへ保存する（呼び出しスレッドごとに接続を作る）。"""
     try:
         conn = db.connect(DB_PATH)
         db.save_roster_data(conn, _roster.to_dict())
@@ -57,397 +59,353 @@ def _persist_roster() -> None:
         pass  # 保存に失敗しても処理自体は止めない
 
 
-def _load_persisted_roster() -> None:
-    """前回までの選手名簿（自動構築の結果を含む）を復元する。"""
-    global _roster
+def _restore() -> None:
+    """前回の選手名簿と試合（形式・完了レース数）を復元する。"""
+    global _roster, _match, _session_id
     try:
-        if DB_PATH.exists():
-            conn = db.connect(DB_PATH)
-            data = db.load_roster_data(conn)
-            conn.close()
-            if data:
-                _roster = Roster.from_dict(data)
+        conn = db.connect(DB_PATH)
+        data = db.load_roster_data(conn)
+        if data:
+            _roster = Roster.from_dict(data)
+        latest = db.latest_session(conn)
+        conn.close()
+        if latest:
+            _session_id = latest["id"]
+            _match = MatchState(latest["format"], latest["total_races"])
+            _match.set_race(latest["completed"])
     except Exception:
-        pass  # 復元に失敗したら空の名簿から始める
+        pass  # 復元に失敗したら新しい試合から始める
 
 
-_load_persisted_roster()
-_processor: RaceProcessor | None = None
-_processor_format: str | None = None
-
-# 要確認レース（simulate_race 由来）。ライブ由来のものは runner.pending が正。
-_pending_review: dict | None = None
-
-# ライブランナー（別スレッドで駆動する）
-_runner: LiveRunner | None = None
-_live_thread: threading.Thread | None = None
-_live_stop = threading.Event()
-_live_status: dict = {"running": False, "error": None}
-
-
-def _get_processor(fmt: str) -> RaceProcessor:
-    global _processor, _processor_format
-    if _processor is None or _processor_format != fmt:
-        _processor = RaceProcessor(_roster, fmt, assume_closed=True)
-        _processor_format = fmt
-    return _processor
-
-
-def _current_pending() -> dict | None:
-    if _runner is not None and _runner.pending is not None:
-        payload = _runner.pending_payload()
-        if payload is not None:
-            return {**payload, "source": "live"}
-    if _pending_review is not None:
-        return {**_pending_review, "source": "simulate"}
-    return None
+_restore()
 
 
 def _db():
+    """イベントループ（メインスレッド）専用のDB接続。"""
     global _conn
     if _conn is None:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _conn = db.connect(DB_PATH)
     return _conn
 
 
+def _new_match(fmt: str, total_races: int = 12) -> None:
+    global _match, _session_id, _runner
+    _session_id = db.create_session(_db(), fmt, total_races)
+    _match = MatchState(fmt, total_races)
+    _runner = None
+
+
+# -- 状態の組み立て ----------------------------------------------------
+def _roster_payload(in_match: set[int]) -> list[dict]:
+    return [
+        {
+            "id": e.id,
+            "name": e.canonical_name,
+            "team": e.team,
+            "team_auto": bool(e.team) and not e.team_manual,
+            "races_seen": e.races_seen,
+            "has_image": bool(e.masks),
+            "in_match": e.id in in_match,
+        }
+        for e in _roster.entries
+    ]
+
+
+_last_payload: dict | None = None
+
+
 def state_payload() -> dict:
-    conn = _db()
-    standings = db.standings(conn, _session_id) if _session_id else []
+    """現在の状態。ライブ処理が名簿を更新中（名前の文字認識で数秒かかることが
+    ある）に画面が固まらないよう、鍵が取れなければ直前の状態を返す。"""
+    global _last_payload
+    if not _lock.acquire(timeout=0.3):
+        if _last_payload is not None:
+            return _last_payload
+        _lock.acquire()
+    try:
+        _last_payload = _build_state()
+        return _last_payload
+    finally:
+        _lock.release()
+
+
+def _build_state() -> dict:
+    rows = db.valid_rows(_db(), _session_id) if _session_id else []
+    pending = None
+    if _runner is not None and _runner.session_id == _session_id:
+        pending = _runner.pending_payload()
+    in_match = {r["entry_id"] for r in rows if r.get("entry_id")}
+    if pending:
+        in_match |= {
+            e["entry_id"] for e in pending["entries"] if e.get("entry_id")
+        }
+    team_names: list[str] = []
+    for e in _roster.entries:
+        if e.team and e.team not in team_names:
+            team_names.append(e.team)
     return {
         "type": "STATE_UPDATE",
         "match": _match.snapshot() if _match else None,
-        "standings": standings,
-        "pending": _current_pending(),
-        "live": _live_status,
+        "standings": standings.compute(rows, _roster),
+        "pending": pending,
+        "live": dict(_live_status),
+        "roster": _roster_payload(in_match),
+        "team_names": team_names,
+        "can_undo": bool(rows) and pending is None,
     }
 
 
-async def broadcast(payload: dict) -> None:
+async def broadcast_state() -> None:
+    text = json.dumps(state_payload(), ensure_ascii=False)
     dead = []
-    for ws in _clients:
+    for ws in list(_clients):
         try:
-            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+            await ws.send_text(text)
         except Exception:
             dead.append(ws)
     for ws in dead:
         _clients.discard(ws)
 
 
-async def broadcast_state() -> None:
-    await broadcast(state_payload())
+def _ok(**extra) -> dict:
+    return {"ok": True, **extra}
 
 
-async def alert(message: str, detail: dict | None = None) -> None:
-    await broadcast({"type": "ALERT", "message": message, "detail": detail or {}})
+def _error(message: str, status: int = 400) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": message}, status_code=status)
 
 
-def reset_match(fmt: str, total_races: int = 12) -> None:
-    global _match, _session_id
-    conn = _db()
-    _session_id = db.create_session(conn, fmt, total_races)
-    _match = MatchState(fmt, total_races)
-
-
-class SimulateResult(BaseModel):
-    names: list[str]          # 順位順に12名
-    scores: list[int]         # 順位順に12個（OCR読み取り値相当）
-    race_number: int | None = None
-
-
+# -- 試合 -------------------------------------------------------------
 @app.post("/api/session")
 async def start_session(body: dict):
+    """新しい試合を始める。選手名簿は残す（reset_roster=true で消す）。"""
     if _live_status["running"]:
-        return {"error": "ライブ実行中はセッションを開始できません。先にライブを停止してください"}
-    reset_match(body.get("format", "2v2"), int(body.get("total_races", 12)))
+        return _error("集計中は新しい試合を始められません。先に「集計をとめる」を押してください")
+    fmt = body.get("format", "2v2")
+    if fmt not in FORMATS:
+        return _error("対戦形式が正しくありません")
+    with _lock:
+        _new_match(fmt, int(body.get("total_races", 12)))
+        if body.get("reset_roster"):
+            _roster.entries.clear()
+            _roster.team_colors.clear()
+            _persist_roster()
     await broadcast_state()
-    return {"session_id": _session_id}
+    return _ok()
 
 
-@app.post("/api/simulate_result")
-async def simulate_result(body: SimulateResult):
-    """カメラなし検証用: 読み取り結果を投入して集計・保存・配信する。"""
-    global _match
-    if _match is None or _session_id is None:
-        reset_match("2v2")
-    assert _match is not None
-    conn = _db()
-    race_number = body.race_number or (_match.current_race + 1)
-    scores_by_rank = {i + 1: s for i, s in enumerate(body.scores)}
-    validation = validate_scores(scores_by_rank)
-    assignment = assign_teams(body.names, _match.format)
-
-    team_id_by_index: dict[int, int] = {}
-    if assignment:
-        for team in assignment.teams:
-            team_id = db.get_or_create_team(
-                conn, _session_id, team.tag, team.normalized_tag
-            )
-            for idx in team.members:
-                team_id_by_index[idx] = team_id
-
-    entries = [
-        {
-            "rank": i + 1,
-            "player_name": body.names[i],
-            "team_id": team_id_by_index.get(i),
-            "score": body.scores[i],
-            "raw_ocr_text": None,
-        }
-        for i in range(12)
-    ]
-    ok = validation.ok and assignment.valid
-    db.save_race_result(conn, _session_id, race_number, entries, is_valid=True)
-    _match.on_result_candidate()
-    _match.on_screen_stable()
-    _match.on_processing_done(valid=True)
-    if not ok:
-        problems = validation.problems + assignment.warnings
-        await alert("検証で問題が検出されました", {"problems": problems})
+@app.post("/api/race/undo")
+async def undo_race():
+    """直前に確定したレースを取り消す。"""
+    with _lock:
+        if _match is None or _session_id is None:
+            return _error("試合が始まっていません")
+        if _runner is not None and _runner.session_id == _session_id:
+            if not _runner.undo_last_race():
+                return _error("取り消せるレースがありません")
+        else:
+            last = db.last_valid_race_result(_db(), _session_id)
+            if last is None:
+                return _error("取り消せるレースがありません")
+            db.delete_race_result(_db(), last)
+            _match.undo_last_race()
     await broadcast_state()
-    return {"ok": ok, "validation": validation.problems, "warnings": assignment.warnings}
+    return _ok()
 
 
-def roster_payload() -> dict:
-    return {
-        "entries": [
-            {
-                "id": e.id,
-                "name": e.canonical_name,
-                "confirmed": e.confirmed,
-                "capacity": e.capacity,
-                "races_seen": e.races_seen,
-                "has_flag": bool(e.flag_signatures),
-            }
-            for e in _roster.entries
-        ]
-    }
-
-
-@app.get("/api/roster")
-async def get_roster():
-    return roster_payload()
-
-
-@app.post("/api/roster")
-async def seed_roster(body: dict):
-    """選手名簿へ選手を事前登録する（ステップ3の結論: 事前登録が本命）。"""
-    name = (body.get("name") or "").strip()
-    if not name:
-        return {"error": "name が空です"}
-    entry = _roster.seed(name)
-    _persist_roster()
-    return {"id": entry.id, **roster_payload()}
-
-
-@app.delete("/api/roster/{entry_id}")
-async def delete_roster(entry_id: int):
-    removed = _roster.remove(entry_id)
-    _persist_roster()
-    return {"removed": removed, **roster_payload()}
-
-
-@app.post("/api/roster/{entry_id}/rename")
-async def rename_roster(entry_id: int, body: dict):
-    """自動登録された選手の名前を正しい表記に直す。"""
-    name = (body.get("name") or "").strip()
-    renamed = _roster.rename(entry_id, name)
-    if renamed:
-        _persist_roster()
-    return {"renamed": renamed, **roster_payload()}
-
-
-class SimulateRace(BaseModel):
-    names: list[str]          # 順位順に12名（OCR読み相当の生の名前）
-    race_number: int | None = None
-
-
-@app.post("/api/simulate_race")
-async def simulate_race(body: SimulateRace):
-    """カメラなし検証用（選手名簿照合あり）: 生の名前12名を投入し、
-    名寄せ→チーム判定→集計を通す。確定できないレースは
-    AWAITING_REVIEW として警告し、結果は is_valid=False で保存する。"""
-    global _match, _pending_review
-    if _match is None or _session_id is None:
-        reset_match("2v2")
-    assert _match is not None
-    conn = _db()
-    race_number = body.race_number or (_match.current_race + 1)
-    processor = _get_processor(_match.format)
-    outcome = processor.process_single(
-        [Observation(name=n) for n in body.names], race_number
-    )
-    race_result_id = save_outcome(conn, _session_id, outcome)
-    _persist_roster()
-    _match.on_result_candidate()
-    _match.on_screen_stable()
-    _match.on_processing_done(valid=outcome.confirmed)
-    if not outcome.confirmed:
-        _pending_review = {
-            "race_result_id": race_result_id,
-            "race_number": race_number,
-            "problems": outcome.problems,
-            "entries": outcome.entries,
-            "teams": outcome.teams,
-        }
-        await alert(
-            "選手名簿との照合で要確認のレースがあります",
-            {"problems": outcome.problems, "race_number": race_number},
-        )
-    await broadcast_state()
-    return {
-        "status": outcome.status,
-        "problems": outcome.problems,
-        "warnings": outcome.warnings,
-        "teams": outcome.teams,
-        "entries": outcome.entries,
-    }
-
-
+# -- 要確認レース -------------------------------------------------------
 @app.post("/api/review/approve")
 async def review_approve():
-    """要確認レースを承認する（DBを有効化し、状態機械を進める）。"""
-    global _pending_review
-    if _runner is not None and _runner.pending is not None:
+    with _lock:
+        if _runner is None or _runner.pending is None:
+            return _error("確認待ちのレースがありません")
+        todo = _runner.pending_problems()
+        if todo:
+            return _error("、".join(todo))
         _runner.approve_pending()
-    elif _pending_review is not None and _match is not None:
-        db.approve_race_result(_db(), _pending_review["race_result_id"])
-        _match.approve_pending()
-        _pending_review = None
-    else:
-        return {"ok": False, "error": "要確認のレースがありません"}
+        _persist_roster()
     await broadcast_state()
-    return {"ok": True}
+    return _ok()
 
 
 @app.post("/api/review/discard")
 async def review_discard():
-    """要確認レースを破棄する（DBから削除し、再検出に戻る）。"""
-    global _pending_review
-    if _runner is not None and _runner.pending is not None:
+    with _lock:
+        if _runner is None or _runner.pending is None:
+            return _error("確認待ちのレースがありません")
         _runner.discard_pending()
-    elif _pending_review is not None and _match is not None:
-        db.delete_race_result(_db(), _pending_review["race_result_id"])
-        _match.discard_pending()
-        _pending_review = None
-    else:
-        return {"ok": False, "error": "要確認のレースがありません"}
     await broadcast_state()
-    return {"ok": True}
+    return _ok()
 
 
+# -- 選手名簿 ----------------------------------------------------------
+@app.get("/api/roster/{entry_id}/image")
+async def roster_image(entry_id: int):
+    """選手の名前の文字画像（誰のことか見分けるための表示用）。"""
+    with _lock:
+        data = _roster.mask_png(entry_id)
+    if data is None:
+        return Response(status_code=404)
+    return Response(content=data, media_type="image/png",
+                    headers={"Cache-Control": "max-age=3600"})
+
+
+@app.post("/api/roster/{entry_id}/rename")
+async def rename_player(entry_id: int, body: dict):
+    with _lock:
+        if not _roster.rename(entry_id, (body.get("name") or "").strip()):
+            return _error("名前を変更できませんでした")
+        _persist_roster()
+    await broadcast_state()
+    return _ok()
+
+
+@app.post("/api/roster/{entry_id}/team")
+async def set_player_team(entry_id: int, body: dict):
+    with _lock:
+        if not _roster.set_team(entry_id, body.get("team")):
+            return _error("チームを設定できませんでした")
+        _persist_roster()
+    await broadcast_state()
+    return _ok()
+
+
+@app.post("/api/roster/{entry_id}/merge")
+async def merge_player(entry_id: int, body: dict):
+    """この選手を、別の選手と同じ人として統合する（過去のレースも付け替える）。"""
+    into = int(body.get("into", -1))
+    with _lock:
+        if not _roster.merge(entry_id, into):
+            return _error("統合できませんでした")
+        _db().execute(
+            "UPDATE player_scores SET entry_id = ? WHERE entry_id = ?",
+            (into, entry_id))
+        _db().commit()
+        if _runner is not None and entry_id in _runner._totals_by_id:
+            _runner._totals_by_id[into] = (
+                _runner._totals_by_id.get(into, 0)
+                + _runner._totals_by_id.pop(entry_id))
+        _persist_roster()
+    await broadcast_state()
+    return _ok()
+
+
+@app.delete("/api/roster/{entry_id}")
+async def delete_player(entry_id: int):
+    with _lock:
+        if not _roster.remove(entry_id):
+            return _error("削除できませんでした")
+        _persist_roster()
+    await broadcast_state()
+    return _ok()
+
+
+# -- 集計（ライブ） ----------------------------------------------------
 def _on_runner_event(loop: asyncio.AbstractEventLoop):
     def callback(kind: str, payload: dict) -> None:
-        if kind == "alert":
-            asyncio.run_coroutine_threadsafe(
-                alert(payload.get("message", ""), payload), loop
-            )
         _persist_roster()  # レース確定のたびに名簿の学習結果を保存する
         asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
 
     return callback
 
 
+def _friendly_error(exc: Exception, device_index: int) -> str:
+    if isinstance(exc, RuntimeError) and "開けません" in str(exc):
+        return (
+            f"カメラ（番号 {device_index}）を開けませんでした。"
+            "OBSで「仮想カメラ開始」を押してから、映像を選び直してください。"
+        )
+    return f"予期しないエラーが起きました: {exc}"
+
+
 @app.post("/api/live/start")
 async def live_start(body: dict):
-    """ライブランナーを別スレッドで開始する（OBS仮想カメラ入力）。"""
     global _runner, _live_thread
     if _live_status["running"]:
-        return {"ok": False, "error": "すでに実行中です"}
-    if _match is None or _session_id is None:
-        reset_match(body.get("format", "2v2"), int(body.get("total_races", 12)))
+        return _error("すでに集計中です")
+    with _lock:
+        if _match is None or _session_id is None:
+            _new_match(body.get("format", "2v2"))
     assert _match is not None and _session_id is not None
     device_index = int(body.get("device_index", 0))
     loop = asyncio.get_running_loop()
     _live_stop.clear()
     _live_status.update({"running": True, "error": None})
+    session_id, match = _session_id, _match
 
     def run() -> None:
         global _runner
         conn = db.connect(DB_PATH)
         try:
-            # 同一人物の判定は画像照合。文字認識は新規選手の名前提案だけに使う
             namer = NameReader()
             _live_status["name_ocr"] = "windows-ocr" if namer.available else "none"
             roi = load_roi_config(str(ROI_PATH))
-            # 本登録の名簿がある場合は closed（消去法あり）、無い場合は
-            # open で名簿を自動構築する（登録なし運用）
+            # 確定した選手がいれば「全員そろっている」前提で消去法も使い、
+            # いなければ名簿を自動構築する
             has_confirmed = any(e.confirmed for e in _roster.entries)
             processor = RaceProcessor(
-                _roster, _match.format, assume_closed=has_confirmed,  # type: ignore[union-attr]
+                _roster, match.format, assume_closed=has_confirmed,
                 namer=namer.read if namer.available else None,
             )
             runner = LiveRunner(
-                roi=roi,
-                ocr=None,
-                processor=processor,
-                match=_match,  # type: ignore[arg-type]
-                conn=conn,
-                session_id=_session_id,  # type: ignore[arg-type]
+                roi=roi, ocr=None, processor=processor, match=match,
+                conn=conn, session_id=session_id,
                 on_event=_on_runner_event(loop),
             )
             _runner = runner
             cam = VirtualCamera(device_index)
             cam.open()
+            asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
             try:
                 for frame in cam.frames_at_interval(0.4):
                     if _live_stop.is_set():
                         break
-                    runner.step(frame, time.monotonic())
+                    with _lock:
+                        runner.step(frame, time.monotonic())
             finally:
                 cam.release()
-        except Exception as exc:  # カメラが開けない等はステータスに残す
-            _live_status["error"] = str(exc)
+        except Exception as exc:
+            _live_status["error"] = _friendly_error(exc, device_index)
         finally:
             _live_status["running"] = False
+            conn.close()
             asyncio.run_coroutine_threadsafe(broadcast_state(), loop)
 
     _live_thread = threading.Thread(target=run, daemon=True)
     _live_thread.start()
-    return {"ok": True}
+    await broadcast_state()
+    return _ok()
 
 
 @app.post("/api/live/stop")
 async def live_stop():
     _live_stop.set()
-    return {"ok": True}
+    return _ok()
 
 
 @app.get("/api/cameras")
 async def cameras():
-    """利用可能なカメラの一覧（番号と解像度）。
-
-    OpenCV ではデバイス名が取れないため、識別はプレビュー画像で
-    行う。ライブ実行中はカメラを掴んでいるため列挙できない。
-    """
+    """利用できる映像（カメラ）の一覧。集計中はカメラを使用中のため取得できない。"""
     if _live_status["running"]:
         return JSONResponse(
-            {"error": "ライブ実行中はカメラ一覧を取得できません"},
-            status_code=409,
-        )
-    found = await asyncio.to_thread(list_cameras)
-    return {"cameras": found}
+            {"error": "集計中は映像の一覧を更新できません"}, status_code=409)
+    return {"cameras": await asyncio.to_thread(list_cameras)}
 
 
 @app.get("/api/cameras/{index}/preview")
 async def camera_preview(index: int):
-    """カメラのプレビュー画像（JPEG）を返す。"""
     if _live_status["running"]:
-        return JSONResponse(
-            {"error": "ライブ実行中はプレビューを取得できません"},
-            status_code=409,
-        )
+        return Response(status_code=409)
     data = await asyncio.to_thread(grab_preview, index)
     if data is None:
-        return JSONResponse(
-            {"error": f"カメラ {index} を開けませんでした"}, status_code=404
-        )
+        return Response(status_code=404)
     return Response(content=data, media_type="image/jpeg")
 
 
-@app.get("/api/live/status")
-async def live_status():
-    return _live_status
+# -- 画面・WebSocket -----------------------------------------------------
+@app.get("/")
+async def index():
+    return RedirectResponse("/admin")
 
 
 @app.get("/overlay")
@@ -460,6 +418,11 @@ async def admin():
     return FileResponse(WEB_DIR / "admin.html")
 
 
+@app.get("/api/state")
+async def get_state():
+    return state_payload()
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -467,24 +430,6 @@ async def ws_endpoint(ws: WebSocket):
     await ws.send_text(json.dumps(state_payload(), ensure_ascii=False))
     try:
         while True:
-            raw = await ws.receive_text()
-            msg = json.loads(raw)
-            await handle_command(msg)
+            await ws.receive_text()  # クライアントからの送信は使わない（切断検知のみ）
     except WebSocketDisconnect:
         _clients.discard(ws)
-
-
-async def handle_command(msg: dict) -> None:
-    global _match
-    cmd = msg.get("type")
-    if cmd == "RESET_MATCH":
-        reset_match(msg.get("format", "2v2"), int(msg.get("total_races", 12)))
-        await broadcast_state()
-    elif cmd == "SET_RACE":
-        if _match is not None:
-            _match.set_race(int(msg.get("completed", 0)))
-            await broadcast_state()
-    elif cmd in ("CORRECT_SCORE", "RENAME_TEAM"):
-        # DBへの手動修正は管理画面の実装と合わせて拡張する（骨格段階では状態を再配信）
-        await alert(f"{cmd} を受け付けました（手動修正の保存は今後実装）", msg)
-        await broadcast_state()

@@ -101,4 +101,4 @@ def test_open_mode_unresolved_goes_to_review():
     # 名簿にない読みは新規登録され、再照合で名前は引けるようになるが、
     # チーム割り当てが成立しないため集計はされず要確認に回る
     assert outcome.teams == []
-    assert any("新規の選手" in p for p in outcome.problems)
+    assert any("初めて見る選手" in p for p in outcome.problems)

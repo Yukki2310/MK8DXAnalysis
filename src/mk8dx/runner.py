@@ -67,6 +67,7 @@ def save_outcome(
             "team_id": team_id_by_index.get(e["rank"] - 1),
             "score": e["score"],
             "raw_ocr_text": e["raw_name"],
+            "entry_id": e.get("entry_id"),
         }
         for e in outcome.entries
     ]
@@ -106,6 +107,8 @@ class LiveRunner:
     _computed_totals: dict[str, int] = field(default_factory=dict)
     _totals_by_id: dict[int, int] = field(default_factory=dict)
     _last_completed_race: int | None = None
+    # 確定済みレースの履歴（race_result_id, 結果）。直前のレースの取り消し用
+    _completed: list = field(default_factory=list)
     _cross_checked_race: int | None = None
     _last_classify_at: float = -10.0
     _last_verify_fail_at: float = -10.0
@@ -163,7 +166,7 @@ class LiveRunner:
         self.last_outcome = outcome
         self.match.on_processing_done(valid=outcome.confirmed, now=now)
         if outcome.confirmed:
-            self._register_completed(outcome)
+            self._register_completed(outcome, race_result_id)
         else:
             self.pending = PendingReview(race_result_id, outcome)
             self._emit("alert", {
@@ -219,7 +222,10 @@ class LiveRunner:
             entries.append({**e, "name": resolved or e["name"]})
         return StandingsReading(entries=entries, problems=reading.problems)
 
-    def _register_completed(self, outcome: RaceOutcome) -> None:
+    def _register_completed(
+        self, outcome: RaceOutcome, race_result_id: int | None = None
+    ) -> None:
+        self._completed.append((race_result_id, outcome))
         for e in outcome.entries:
             name = e["resolved_name"]
             if name:
@@ -276,7 +282,7 @@ class LiveRunner:
         if self.pending is None:
             return False
         db.approve_race_result(self.conn, self.pending.race_result_id)
-        self._register_completed(self.pending.outcome)
+        self._register_completed(self.pending.outcome, self.pending.race_result_id)
         self.pending = None
         self.match.approve_pending(now)
         self._emit("state", {})
@@ -292,17 +298,49 @@ class LiveRunner:
         self._emit("state", {})
         return True
 
+    def pending_problems(self) -> list[str]:
+        """確定を妨げている問題（今の選手名簿で再評価。直せば消える）。"""
+        if self.pending is None:
+            return []
+        return self.processor.team_problems(
+            [e.get("entry_id") for e in self.pending.outcome.entries]
+        )
+
     def pending_payload(self) -> dict | None:
         if self.pending is None:
             return None
         outcome = self.pending.outcome
+        todo = self.pending_problems()
         return {
             "race_result_id": self.pending.race_result_id,
             "race_number": outcome.race_index,
             "problems": outcome.problems,
+            "todo": todo,
+            "can_approve": not todo,
             "entries": outcome.entries,
             "teams": outcome.teams,
         }
+
+    def undo_last_race(self) -> bool:
+        """直前に確定したレースを取り消す（DBと累計を巻き戻す）。"""
+        if not self._completed or self.pending is not None:
+            return False
+        race_result_id, outcome = self._completed.pop()
+        if race_result_id is not None:
+            db.delete_race_result(self.conn, race_result_id)
+        for e in outcome.entries:
+            entry_id = e.get("entry_id")
+            if entry_id is not None and entry_id in self._totals_by_id:
+                self._totals_by_id[entry_id] -= e["score"]
+            name = e["resolved_name"]
+            if name and name in self._computed_totals:
+                self._computed_totals[name] -= e["score"]
+        self.match.undo_last_race()
+        self._last_completed_race = (
+            self._completed[-1][1].race_index if self._completed else None
+        )
+        self._emit("state", {})
+        return True
 
     def _emit(self, kind: str, payload: dict) -> None:
         if self.on_event is not None:

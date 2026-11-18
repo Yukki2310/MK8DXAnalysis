@@ -70,6 +70,9 @@ _CONFUSION_PAIRS = {
     ]
 }
 
+# チームの表示色（オーバーレイのカラーバー）
+TEAM_PALETTE = ["#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4"]
+
 # --- 画像ベース識別（identity.py、フェーズ1）---
 # 文字マスク距離をコストへ換算する倍率。距離0.4以上でUNASSIGNED_COST(4.0)
 # に達し「新規プレイヤー」になる。OCR名のコストは同点時の微調整に使うだけ。
@@ -310,6 +313,8 @@ class RosterEntry:
     co_seen: set[int] = field(default_factory=set)  # 同じレースに同時出現した相手のID
     masks: list[np.ndarray] = field(default_factory=list)  # 文字マスク見本
     name_reads: int = 0        # 表示名を文字認識で読んだ回数（上限あり）
+    team: str | None = None    # チーム名（表示・集計用）。None は未設定
+    team_manual: bool = False  # 人が設定したか（False は自動推定）
     _prepared: list[np.ndarray] = field(default_factory=list, repr=False)
 
     def add_mask(self, mask: np.ndarray) -> bool:
@@ -346,6 +351,8 @@ class RosterEntry:
             "co_seen": sorted(self.co_seen),
             "masks": [mask_to_dict(m) for m in self.masks],
             "name_reads": self.name_reads,
+            "team": self.team,
+            "team_manual": self.team_manual,
         }
 
     @classmethod
@@ -363,6 +370,8 @@ class RosterEntry:
         entry.pinned_name = data.get("pinned_name")
         entry.co_seen = {int(x) for x in data.get("co_seen", [])}
         entry.name_reads = int(data.get("name_reads", 0))
+        entry.team = data.get("team")
+        entry.team_manual = bool(data.get("team_manual", False))
         entry.masks = [mask_from_dict(m) for m in data.get("masks", [])]
         entry._prepared = [prepare_mask(m) for m in entry.masks]
         return entry
@@ -407,6 +416,8 @@ class Roster:
     def __init__(self) -> None:
         self.entries: list[RosterEntry] = []
         self._next_id = 1
+        # チーム名 -> 色（オーバーレイのカラーバー）。チームを作った順に割り当てる
+        self.team_colors: dict[str, str] = {}
 
     # -- 登録 ------------------------------------------------------
     def seed(self, name: str, flag: np.ndarray | None = None,
@@ -456,6 +467,57 @@ class Roster:
         entry.variants[entry.pinned_name] += 2
         entry.confirmed = True
         return True
+
+    # -- チーム・統合・画像 -------------------------------------------
+    def set_team(self, entry_id: int, team: str | None, *, manual: bool = True) -> bool:
+        """選手のチームを設定する（空文字・None で未設定に戻す）。"""
+        entry = self._entry_by_id(entry_id)
+        if entry is None:
+            return False
+        team = (team or "").strip() or None
+        entry.team = team
+        entry.team_manual = manual and team is not None
+        if team:
+            self.color_for(team)
+        return True
+
+    def color_for(self, team: str) -> str:
+        """チーム名の色を返す（初めてのチームには未使用の色を割り当てる）。"""
+        key = normalize_name(team)
+        for label, color in self.team_colors.items():
+            if normalize_name(label) == key:
+                return color
+        used = set(self.team_colors.values())
+        free = [c for c in TEAM_PALETTE if c not in used]
+        color = free[0] if free else TEAM_PALETTE[len(self.team_colors) % len(TEAM_PALETTE)]
+        self.team_colors[team] = color
+        return color
+
+    def merge(self, from_id: int, into_id: int) -> bool:
+        """from_id の選手を into_id と同一人物として統合する（誤った分裂の修正用）。"""
+        a, b = self._entry_by_id(from_id), self._entry_by_id(into_id)
+        if a is None or b is None or a is b:
+            return False
+        if b.team is None and a.team is not None:
+            b.team, b.team_manual = a.team, a.team_manual
+        if a.pinned_name and not b.pinned_name:
+            b.pinned_name = a.pinned_name
+        self._absorb(b, a)
+        return True
+
+    def mask_png(self, entry_id: int) -> bytes | None:
+        """選手の名前の文字画像（管理画面で誰か見分けるための表示用PNG）。"""
+        import cv2
+
+        entry = self._entry_by_id(entry_id)
+        if entry is None or not entry.masks:
+            return None
+        mask = entry.masks[0]
+        img = np.full((mask.shape[0] + 12, mask.shape[1] + 20), 40, np.uint8)
+        img[6:6 + mask.shape[0], 10:10 + mask.shape[1]][mask > 0.5] = 255
+        img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        ok, buf = cv2.imencode(".png", img)
+        return buf.tobytes() if ok else None
 
     def _entry_by_id(self, entry_id: int) -> RosterEntry | None:
         for e in self.entries:
@@ -696,6 +758,7 @@ class Roster:
             e for e in self.entries
             if e.confirmed
             or e.pinned_name is not None
+            or e.team_manual
             or e.races_seen > 1
             or race_index - e.last_seen_race < PRUNE_AFTER_RACES
         ]
@@ -705,6 +768,7 @@ class Roster:
         return {
             "next_id": self._next_id,
             "entries": [e.to_dict() for e in self.entries],
+            "team_colors": dict(self.team_colors),
         }
 
     @classmethod
@@ -712,6 +776,7 @@ class Roster:
         roster = cls()
         roster.entries = [RosterEntry.from_dict(d) for d in data.get("entries", [])]
         roster._next_id = int(data.get("next_id", len(roster.entries) + 1))
+        roster.team_colors = dict(data.get("team_colors", {}))
         return roster
 
     def resolve_race(self, observations: list[Observation], race_index: int, *,

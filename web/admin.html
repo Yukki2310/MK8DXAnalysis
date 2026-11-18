@@ -2,238 +2,741 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<title>MK8DX 管理画面</title>
+<title>MK8DX 自動集計</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: sans-serif; margin: 24px; background: #16181d; color: #eee; }
-  h1 { font-size: 20px; }
-  section { background: #22252d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  :root {
+    --bg: #f2f5fa; --card: #ffffff; --line: #dde3ee; --text: #1c2433; --sub: #5f6b80;
+    --blue: #2f6df6; --blue-d: #2457cc; --green: #1f9d55; --green-bg: #e6f6ec;
+    --amber: #b7791f; --amber-bg: #fff6df; --red: #d64545; --red-bg: #fdeaea;
+    --idle-bg: #eaf0fb;
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 16px; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Yu Gothic UI", "Meiryo", "Segoe UI", sans-serif; line-height: 1.6;
+  }
+  header.top {
+    background: #1c2433; color: #fff; padding: 14px 24px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  header.top h1 { font-size: 20px; margin: 0; font-weight: 700; }
+  header.top .conn { margin-left: auto; font-size: 13px; opacity: .8; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px 16px 80px; }
+
+  /* 状況バナー */
+  .hero { border-radius: 14px; padding: 18px 22px; margin-bottom: 16px; border: 2px solid transparent; }
+  .hero h2 { margin: 0 0 2px; font-size: 22px; }
+  .hero p { margin: 0; color: var(--sub); }
+  .hero.idle { background: var(--idle-bg); border-color: #c9d8f3; }
+  .hero.ok   { background: var(--green-bg); border-color: #bfe6cd; }
+  .hero.busy { background: #eef2ff; border-color: #cdd6ff; }
+  .hero.warn { background: var(--amber-bg); border-color: #f0d9a0; }
+  .hero.bad  { background: var(--red-bg); border-color: #f3c0c0; }
+  .hero .count { float: right; font-size: 15px; color: var(--sub); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+          padding: 20px 22px; margin-bottom: 16px; }
+  .card > h2 { margin: 0 0 4px; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  .card > .lead { margin: 0 0 14px; color: var(--sub); font-size: 15px; }
+  .num { display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background: var(--blue);
+         color: #fff; align-items: center; justify-content: center; font-size: 15px; flex: none; }
+  /* 集計中は準備用の枠（映像・形式）を隠して、順位と確認に集中できるようにする */
+  body.running .step { display: none; }
+  .card.attention { border: 2px solid #e8b84a; background: #fffdf5; }
+
+  button, .btn {
+    font: inherit; font-weight: 700; border: 0; border-radius: 10px; padding: 10px 18px;
+    background: var(--blue); color: #fff; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--blue-d); }
+  button:disabled { background: #b9c3d6; cursor: not-allowed; }
+  button.secondary { background: #e6ebf5; color: var(--text); }
+  button.secondary:hover:not(:disabled) { background: #d8dfee; }
+  button.danger { background: var(--red); }
+  button.danger:hover:not(:disabled) { background: #b53636; }
+  button.go { background: var(--green); font-size: 20px; padding: 14px 32px; }
+  button.go:hover:not(:disabled) { background: #187a43; }
+  button.small { padding: 6px 12px; font-size: 14px; border-radius: 8px; }
+  .row-btns { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  .hint { color: var(--sub); font-size: 14px; }
+  .warn-text { color: var(--amber); font-size: 14px; }
+
+  input[type=text], select {
+    font: inherit; padding: 8px 10px; border: 1px solid #c3cde0; border-radius: 8px;
+    background: #fff; color: var(--text); min-width: 0;
+  }
+  input[type=text]:focus, select:focus { outline: 2px solid #9db8fb; border-color: var(--blue); }
+  input.saved { border-color: var(--green); background: var(--green-bg); }
+
+  /* 映像の選択 */
+  .cams { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin-top: 8px; }
+  .cam { border: 3px solid var(--line); border-radius: 12px; overflow: hidden; cursor: pointer; background: #fff; }
+  .cam img { display: block; width: 100%; aspect-ratio: 16/9; object-fit: cover; background: #111; }
+  .cam .cap { padding: 6px 10px; font-size: 14px; display: flex; justify-content: space-between; }
+  .cam.selected { border-color: var(--green); }
+  .cam.selected .cap { background: var(--green-bg); color: var(--green); font-weight: 700; }
+  .cams.locked .cam { cursor: default; opacity: .75; }
+
+  /* 形式の選択 */
+  .formats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .fmt { border: 3px solid var(--line); border-radius: 12px; padding: 14px; text-align: center;
+         cursor: pointer; background: #fff; }
+  .fmt b { display: block; font-size: 20px; }
+  .fmt span { color: var(--sub); font-size: 14px; }
+  .fmt.selected { border-color: var(--blue); background: #eef3ff; }
+  .formats.locked .fmt { cursor: default; opacity: .7; }
+
+  /* 表 */
   table { border-collapse: collapse; width: 100%; }
-  th, td { border-bottom: 1px solid #3a3f4c; padding: 6px 8px; text-align: left; }
-  #alerts { color: #ff8080; white-space: pre-wrap; }
-  textarea { width: 100%; background: #101216; color: #eee; border: 1px solid #3a3f4c; border-radius: 6px; }
-  button { background: #4363d8; color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-  select, input { background: #101216; color: #eee; border: 1px solid #3a3f4c; border-radius: 6px; padding: 6px; }
+  th { text-align: left; font-size: 13px; color: var(--sub); font-weight: 600;
+       padding: 6px 8px; border-bottom: 2px solid var(--line); }
+  td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.num-col, th.num-col { text-align: right; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; vertical-align: -1px; }
+  .members { color: var(--sub); font-size: 13px; }
+  .big { font-size: 20px; font-weight: 800; }
+  .gain { color: #c58a00; font-weight: 700; }
+  .scroll-x { overflow-x: auto; }
+  td.race { text-align: right; color: var(--sub); font-size: 13px; padding: 8px 4px; }
+
+  /* 選手 */
+  .pimg { width: 150px; height: 42px; object-fit: contain; background: #28303f; border-radius: 6px; display: block; }
+  .pimg.none { display: flex; align-items: center; justify-content: center; color: #9aa6bd; font-size: 12px; }
+  .players { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .player { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #fafbfe; }
+  .player .fields { display: grid; grid-template-columns: 64px 1fr; gap: 6px 8px; align-items: center; margin-top: 8px; }
+  .player label { font-size: 13px; color: var(--sub); }
+  .badge { font-size: 12px; background: #e6ebf5; color: var(--sub); border-radius: 6px; padding: 1px 6px; margin-left: 6px; }
+  .player label .badge { display: block; margin: 2px 0 0; width: fit-content; }
+  details.more { margin-top: 8px; font-size: 14px; }
+  details.more summary { cursor: pointer; color: var(--sub); }
+  details.more .inner { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+
+  /* オーバーレイ設定 */
+  .urlbox { display: flex; gap: 8px; flex-wrap: wrap; }
+  .urlbox input { flex: 1; min-width: 260px; font-family: Consolas, monospace; font-size: 14px; }
+  .opts { display: flex; gap: 20px; flex-wrap: wrap; margin: 12px 0; align-items: center; }
+  .preview { position: relative; width: 100%; max-width: 480px; aspect-ratio: 16/9; border-radius: 10px; overflow: hidden;
+             background: conic-gradient(#3a4252 25%, #2b3240 0 50%, #3a4252 0 75%, #2b3240 0) 0 0 / 24px 24px; }
+  .preview iframe { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; border: 0;
+                    transform-origin: 0 0; pointer-events: none; }
+  ol.steps { padding-left: 22px; margin: 8px 0; }
+  ol.steps li { margin: 4px 0; }
+  details.faq summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
+  details.faq p { margin: 4px 0 10px 8px; color: var(--sub); }
+
+  .reason { margin-top: 8px; color: var(--amber); font-size: 14px; }
+  .reason ul { margin: 4px 0 0; padding-left: 20px; }
+
+  /* 通知・確認ダイアログ */
+  #toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 50;
+           display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .toast { background: #1c2433; color: #fff; padding: 10px 18px; border-radius: 10px; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+  .toast.error { background: var(--red); }
+  dialog { border: 0; border-radius: 14px; padding: 24px; max-width: 460px; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+  dialog::backdrop { background: rgba(10, 14, 25, .5); }
+  dialog h3 { margin: 0 0 8px; }
+  dialog .row-btns { justify-content: flex-end; }
+  #disconnected { display: none; background: var(--red); color: #fff; text-align: center; padding: 8px; font-weight: 700; }
+  @media (max-width: 640px) { .formats { grid-template-columns: 1fr; } .hero .count { float: none; display: block; } }
 </style>
 </head>
 <body>
-<h1>MK8DX 自動集計 管理画面</h1>
+<header class="top">
+  <h1>MK8DX 自動集計</h1>
+  <span class="conn" id="conn">接続中…</span>
+</header>
+<div id="disconnected">アプリとの接続が切れました。アプリが起動しているか確認して、このページを開き直してください。</div>
 
-<section>
-  <h2>マッチコントロール</h2>
-  形式:
-  <select id="format">
-    <option value="2v2">2v2（6チーム）</option>
-    <option value="3v3">3v3（4チーム）</option>
-    <option value="4v4">4v4（3チーム）</option>
-  </select>
-  <button id="reset">新規セッション開始（リセット）</button>
-  <span id="matchState"></span>
-</section>
+<main>
+  <!-- いまの状況 -->
+  <section class="hero idle" id="hero">
+    <span class="count" id="heroCount"></span>
+    <h2 id="heroTitle">準備しましょう</h2>
+    <p id="heroText"></p>
+  </section>
 
-<section>
-  <h2>カメラソース</h2>
-  <p>番号だけでは判別できないため、一覧のプレビュー映像を見てOBS仮想カメラを選んでください（ライブ実行中は一覧を取得できません）。</p>
-  <button id="camList">ソース一覧を取得</button>
-  <span id="camNote"></span>
-  <div id="camGrid" style="display:flex; flex-wrap:wrap; gap:12px; margin-top:8px"></div>
-</section>
+  <!-- 確認が必要なレース -->
+  <section class="card attention" id="pendingCard" hidden>
+    <h2 id="pendingTitle">確認が必要なレース</h2>
+    <p class="lead" id="pendingLead"></p>
+    <div class="scroll-x">
+      <table>
+        <thead><tr><th>着順</th><th>ゲーム画面の名前</th><th>名前</th><th>チーム</th><th class="num-col">点</th></tr></thead>
+        <tbody id="pendingBody"></tbody>
+      </table>
+    </div>
+    <div class="reason" id="pendingReason"></div>
+    <div class="row-btns">
+      <button id="approveBtn">この内容で確定する</button>
+      <button class="secondary" id="discardBtn">この結果は使わない</button>
+      <span class="hint">「使わない」を選ぶと、次にリザルトが表示されたときに読み取り直します。</span>
+    </div>
+  </section>
 
-<section>
-  <h2>ライブ（OBS仮想カメラ）</h2>
-  デバイス番号: <input id="liveDevice" type="number" value="0" min="0" style="width:60px">
-  <button id="liveStart">開始</button>
-  <button id="liveStop">停止</button>
-  <span id="liveState">停止中</span>
-</section>
+  <!-- ① 映像 -->
+  <section class="card step">
+    <h2><span class="num">1</span>ゲームの映像を選ぶ</h2>
+    <p class="lead">OBS の「仮想カメラ開始」を押してから「映像を探す」を押し、ゲーム画面が映っているものを選んでください。</p>
+    <div class="row-btns" style="margin-top:0">
+      <button class="secondary" id="camRefresh">映像を探す</button>
+      <span class="hint" id="camNote"></span>
+    </div>
+    <div class="cams" id="cams"></div>
+  </section>
 
-<section>
-  <h2>選手名簿（事前登録）</h2>
-  <p>事前登録なしでも、レースを重ねると自動で名簿が構築されます（内容は保存され、再起動しても残ります）。手動で登録しておくと初回から精度が上がります。同名の選手は2回登録してください。国旗はレース中の自動学習でひも付きます。自動登録された選手の名前が違う場合は「名前を変更」で正しい表記に直してください（別人として増えてしまった場合は片方を削除してください）。</p>
-  <input id="rosterName" placeholder="選手名（タグ込み）" size="32">
-  <button id="rosterAdd">登録する</button>
-  <table><thead><tr><th>ID</th><th>名前</th><th>状態</th><th>出現レース</th><th>国旗</th><th></th></tr></thead>
-  <tbody id="rosterBody"></tbody></table>
-</section>
+  <!-- ② 形式 -->
+  <section class="card step">
+    <h2><span class="num">2</span>対戦の形式を選ぶ</h2>
+    <p class="lead">1チームの人数を選びます。全部で12人が走ります。</p>
+    <div class="formats" id="formats">
+      <div class="fmt" data-fmt="2v2"><b>2人 × 6チーム</b><span>2v2</span></div>
+      <div class="fmt" data-fmt="3v3"><b>3人 × 4チーム</b><span>3v3</span></div>
+      <div class="fmt" data-fmt="4v4"><b>4人 × 3チーム</b><span>4v4</span></div>
+    </div>
+  </section>
 
-<section>
-  <h2>警告</h2>
-  <div id="alerts">なし</div>
-</section>
+  <!-- ③ 開始 -->
+  <section class="card">
+    <h2><span class="num">3</span>集計をはじめる</h2>
+    <p class="lead">はじめると、レースが終わってリザルト画面が出るたびに自動で読み取って点数を足します。</p>
+    <div class="row-btns" style="margin-top:0">
+      <button class="go" id="startBtn">集計をはじめる</button>
+      <button class="danger" id="stopBtn" hidden>集計をとめる</button>
+      <span class="hint" id="startNote"></span>
+    </div>
+  </section>
 
-<section id="pendingSection" style="display:none">
-  <h2>要確認レース（暫定結果）</h2>
-  <div id="pendingInfo"></div>
-  <table><thead><tr><th>順位</th><th>OCR読み</th><th>名寄せ結果</th><th>点</th><th></th></tr></thead>
-  <tbody id="pendingBody"></tbody></table>
-  <button id="approve">この内容で承認する</button>
-  <button id="discard">破棄する</button>
-</section>
+  <!-- 順位表 -->
+  <section class="card">
+    <h2>いまの順位</h2>
+    <p class="lead" id="standingsLead">まだレースの結果がありません。</p>
+    <div class="scroll-x">
+      <table id="standingsTable" hidden>
+        <thead><tr id="standingsHead"></tr></thead>
+        <tbody id="standingsBody"></tbody>
+      </table>
+    </div>
+    <div class="row-btns">
+      <button class="secondary" id="undoBtn" disabled>直前のレースを取り消す</button>
+      <button class="secondary" id="newMatchBtn">新しい試合をはじめる</button>
+    </div>
+  </section>
 
-<section>
-  <h2>現在の順位表</h2>
-  <table><thead><tr><th>順位</th><th>チーム</th><th>合計</th><th>首位との差</th><th>直前レース</th></tr></thead>
-  <tbody id="standings"></tbody></table>
-</section>
+  <!-- 選手とチーム -->
+  <section class="card">
+    <h2>選手とチーム</h2>
+    <p class="lead">
+      選手は自動で見つかります。名前が違っていたら直してください。<b>同じチームの選手には同じチーム名</b>を入力します
+      （「自動」と出ているものはアプリの推測です）。変更は順位表にもすぐ反映されます。
+    </p>
+    <div class="players" id="players"></div>
+    <p class="hint" id="playersEmpty">まだ選手が見つかっていません。最初のレースの結果が出ると、ここに表示されます。</p>
+    <details class="more" id="oldPlayersWrap" hidden>
+      <summary id="oldPlayersSummary"></summary>
+      <div class="players" id="oldPlayers" style="margin-top:10px"></div>
+    </details>
+  </section>
 
-<section>
-  <h2>検証用: リザルト投入（選手名簿照合あり）</h2>
-  <p>OCRで読んだままの名前12名（順位順、カンマ区切り）を投入し、名寄せ→集計を通します。確定できない場合は警告に理由が出ます。</p>
-  <textarea id="raceNames" rows="2">XI c.qq,FR,racist #1,Xb,RR,FRFlowx,Aかぜんだかいとしき,AA,XIavalon,今ねえあまあ!,日日-,-</textarea>
-  <button id="simulateRace">照合して投入する</button>
-  <span id="raceResult"></span>
-</section>
+  <!-- OBS -->
+  <section class="card">
+    <h2>OBS に順位表を表示する</h2>
+    <ol class="steps">
+      <li>OBS のソースの「＋」→「ブラウザ」を選びます。</li>
+      <li>下のアドレスをコピーして「URL」に貼り付けます。幅は <b>1920</b>、高さは <b>1080</b> にします。</li>
+      <li>OK を押すと、ゲーム画面の上に順位表が重なります。</li>
+    </ol>
+    <div class="opts">
+      <label>表示する位置
+        <select id="optPos">
+          <option value="tr">右上</option><option value="tl">左上</option>
+          <option value="br">右下</option><option value="bl">左下</option>
+        </select>
+      </label>
+      <label>大きさ
+        <select id="optSize">
+          <option value="s">小さめ</option><option value="m" selected>ふつう</option><option value="l">大きめ</option>
+        </select>
+      </label>
+    </div>
+    <div class="urlbox">
+      <input type="text" id="overlayUrl" readonly>
+      <button id="copyUrl">アドレスをコピー</button>
+    </div>
+    <p class="hint">プレビュー（市松模様の部分は透明です）</p>
+    <div class="preview" id="previewBox"><iframe id="previewFrame" title="プレビュー"></iframe></div>
+  </section>
 
-<section>
-  <h2>検証用: リザルト投入（カメラなしテスト）</h2>
-  <p>名前12名（順位順、カンマ区切り）とスコア12個を投入して集計を通します。</p>
-  <textarea id="simNames" rows="2">あきら,Xたろう,あかり,べーた1,Xじろう,べーた2,みく,Zed1,みき,Zed2,Qoo1,Qoo2</textarea>
-  <textarea id="simScores" rows="1">15,12,10,9,8,7,6,5,4,3,2,1</textarea>
-  <button id="simulate">投入する</button>
-</section>
+  <section class="card">
+    <h2>困ったときは</h2>
+    <details class="faq"><summary>リザルト画面が読み取られません</summary>
+      <p>① OBS の仮想カメラが開始されているか ② 上の「1. ゲームの映像」でゲーム画面が映る映像を選んだか を確認してください。
+         映像の大きさは 1920×1080 にしてください。選び直したら「集計をとめる」→「集計をはじめる」を押します。</p></details>
+    <details class="faq"><summary>同じ人が別の選手として増えてしまいました</summary>
+      <p>「選手とチーム」で、増えたほうの「…その他」を開き、「同じ人として統合」で正しい選手を選んでください。</p></details>
+    <details class="faq"><summary>点数やチームがおかしいレースがあります</summary>
+      <p>「直前のレースを取り消す」で戻せます。チームが違う場合は「選手とチーム」でチーム名を直すと、過去のレースも含めて順位表が直ります。</p></details>
+    <details class="faq"><summary>アプリを閉じても試合は続けられますか</summary>
+      <p>はい。アプリを開き直すと、直前の試合の順位と選手がそのまま残っています。</p></details>
+  </section>
+</main>
+
+<datalist id="teamList"></datalist>
+<div id="toast"></div>
+
+<dialog id="confirmDlg">
+  <h3 id="dlgTitle"></h3>
+  <p id="dlgBody"></p>
+  <label id="dlgOptWrap" hidden><input type="checkbox" id="dlgOpt"> <span id="dlgOptText"></span></label>
+  <div class="row-btns">
+    <button class="secondary" id="dlgCancel">やめる</button>
+    <button class="danger" id="dlgOk">実行する</button>
+  </div>
+</dialog>
 
 <script>
-  const ws = new WebSocket(`ws://${location.host}/ws`);
-  const alertsEl = document.getElementById('alerts');
-  ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === 'STATE_UPDATE') {
-      const m = msg.match;
-      document.getElementById('matchState').textContent =
-        m ? ` / 完了レース: ${m.current_race} / ${m.total_races}（状態: ${m.phase}）` : '';
-      document.getElementById('liveState').textContent =
-        msg.live && msg.live.running ? '実行中' : ('停止中' + (msg.live && msg.live.error ? '（エラー: ' + msg.live.error + '）' : ''));
-      const psec = document.getElementById('pendingSection');
-      if (msg.pending) {
-        psec.style.display = '';
-        document.getElementById('pendingInfo').textContent =
-          `レース ${msg.pending.race_number}（${msg.pending.source}）: ` + (msg.pending.problems || []).join(' / ');
-        const pb = document.getElementById('pendingBody');
-        pb.innerHTML = '';
-        for (const e of msg.pending.entries || []) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${e.rank}</td><td>${e.raw_name}</td><td>${e.resolved_name || '（未照合）'}</td><td>${e.score}</td><td>${e.low_confidence ? '消去法' : ''}</td>`;
-          pb.appendChild(tr);
-        }
-      } else {
-        psec.style.display = 'none';
-      }
-      const tb = document.getElementById('standings');
-      tb.innerHTML = '';
-      for (const t of msg.standings || []) {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${t.rank}</td><td>${t.tag}</td><td>${t.total}</td><td>${t.diff_from_top}</td><td>+${t.last_race_points}</td>`;
-        tb.appendChild(tr);
-      }
-    } else if (msg.type === 'ALERT') {
-      alertsEl.textContent = msg.message + '\n' + JSON.stringify(msg.detail, null, 2);
+'use strict';
+const $ = (s) => document.querySelector(s);
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* 保存できなくても動く */ } },
+};
+
+let state = null;
+let cameras = null;                              // null = まだ探していない
+let selectedCam = LS.get('cam', '');             // 選んだ映像の番号（文字列）
+
+// ---------- 小さな道具 ----------
+function h(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, '');
+    else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) e.append(kid);
+  return e;
+}
+
+function toast(message, kind = 'info') {
+  const t = h('div', { class: 'toast ' + kind, text: message });
+  $('#toast').append(t);
+  setTimeout(() => t.remove(), kind === 'error' ? 6000 : 2500);
+}
+
+async function api(method, url, body) {
+  let res, data = {};
+  try {
+    res = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    try { data = await res.json(); } catch { /* 本文なし */ }
+  } catch {
+    toast('アプリに接続できませんでした。アプリが起動しているか確認してください。', 'error');
+    return null;
+  }
+  if (!res.ok || data.ok === false) {
+    toast(data.error || 'うまくいきませんでした。もう一度お試しください。', 'error');
+    return null;
+  }
+  return data;
+}
+
+function confirmDialog({ title, body, okText = '実行する', option = null }) {
+  return new Promise((resolve) => {
+    const dlg = $('#confirmDlg');
+    $('#dlgTitle').textContent = title;
+    $('#dlgBody').textContent = body;
+    $('#dlgOk').textContent = okText;
+    $('#dlgOptWrap').hidden = !option;
+    $('#dlgOpt').checked = false;
+    if (option) $('#dlgOptText').textContent = option;
+    const done = (ok) => { dlg.close(); resolve(ok ? { checked: $('#dlgOpt').checked } : null); };
+    $('#dlgOk').onclick = () => done(true);
+    $('#dlgCancel').onclick = () => done(false);
+    dlg.onclose = () => resolve(null);
+    dlg.showModal();
+  });
+}
+
+// 入力欄: 入力中は上書きせず、変更が確定したとき（Enter・フォーカスが外れたとき）に保存する
+function bindField(input, getRemote, save) {
+  input.dataset.remote = getRemote() ?? '';
+  input.onchange = async () => {
+    const value = input.value.trim();
+    if (value === (input.dataset.remote || '')) return;
+    const ok = await save(value);
+    if (ok) {
+      input.classList.add('saved');
+      setTimeout(() => input.classList.remove('saved'), 1200);
     }
   };
-  document.getElementById('camList').onclick = async () => {
-    const note = document.getElementById('camNote');
-    const grid = document.getElementById('camGrid');
-    note.textContent = '取得中...';
-    grid.innerHTML = '';
+}
+function syncField(input, value) {
+  value = value ?? '';
+  input.dataset.remote = value;
+  if (document.activeElement !== input) input.value = value;
+}
+
+// ---------- 状況バナー ----------
+function heroInfo(s) {
+  const live = s.live || {};
+  const m = s.match;
+  const done = m ? m.current_race : 0;
+  if (live.error) return { tone: 'bad', title: 'うまく動きませんでした', text: live.error };
+  if (!live.running) {
+    if (m && m.phase === 'FINISHED') return { tone: 'ok', title: '全レース終了です。おつかれさまでした', text: '新しい試合をはじめるときは「新しい試合をはじめる」を押してください。' };
+    if (done > 0) return { tone: 'idle', title: '集計はとまっています', text: 'これまでの結果は残っています。続けるには「集計をはじめる」を押してください。' };
+    return { tone: 'idle', title: '準備しましょう', text: '1. 映像を選ぶ → 2. 形式を選ぶ → 3.「集計をはじめる」の順に進めます。' };
+  }
+  switch (m && m.phase) {
+    case 'RESULT_DETECTING':
+    case 'PROCESSING':
+      return { tone: 'busy', title: 'リザルトを読み取っています…', text: '少しお待ちください。' };
+    case 'AWAITING_REVIEW':
+      return { tone: 'warn', title: '確認が必要です', text: '下の「確認が必要なレース」を見て、内容を確かめてください。' };
+    case 'COOLDOWN':
+      return { tone: 'ok', title: `レース ${done} を集計しました`, text: '次のレースのリザルトを待っています。' };
+    case 'FINISHED':
+      return { tone: 'ok', title: '全レース終了です。おつかれさまでした', text: '' };
+    default:
+      return { tone: 'ok', title: '集計中：リザルト画面を待っています', text: 'レースが終わってリザルトが表示されると、自動で読み取ります。' };
+  }
+}
+
+function renderHero(s) {
+  const info = heroInfo(s);
+  const hero = $('#hero');
+  hero.className = 'hero ' + info.tone;
+  $('#heroTitle').textContent = info.title;
+  $('#heroText').textContent = info.text;
+  $('#heroCount').textContent = s.match ? `完了 ${s.match.current_race} / ${s.match.total_races} レース` : '';
+}
+
+// ---------- 確認が必要なレース / 選手 ----------
+const playerById = () => new Map((state.roster || []).map((p) => [p.id, p]));
+
+function renamePlayer(id) { return (v) => v ? api('POST', `/api/roster/${id}/rename`, { name: v }) : Promise.resolve(null); }
+function setTeam(id) { return (v) => api('POST', `/api/roster/${id}/team`, { team: v }); }
+
+function pImage(p) {
+  return p && p.has_image
+    ? h('img', { class: 'pimg', src: `/api/roster/${p.id}/image`, alt: 'ゲーム画面の名前' })
+    : h('div', { class: 'pimg none', text: '（画像なし）' });
+}
+
+function syncKeyed(container, items, keyFn, create, update) {
+  const existing = new Map([...container.children].map((c) => [c.dataset.key, c]));
+  const order = [];
+  for (const item of items) {
+    const key = String(keyFn(item));
+    let node = existing.get(key);
+    if (!node) { node = create(item); node.dataset.key = key; }
+    update(node, item);
+    order.push(node);
+    existing.delete(key);
+  }
+  for (const node of existing.values()) node.remove();
+  order.forEach((node, i) => { if (container.children[i] !== node) container.insertBefore(node, container.children[i] || null); });
+}
+
+function renderPending(s) {
+  const p = s.pending;
+  $('#pendingCard').hidden = !p;
+  if (!p) return;
+  const plist = playerById();
+  $('#pendingTitle').textContent = `レース ${p.race_number} の確認`;
+  const infos = (p.problems || []).filter((x) => !(p.todo || []).includes(x));
+  $('#pendingLead').textContent = infos.length ? infos.join(' / ') : '内容を確かめて、よければ「確定する」を押してください。';
+
+  syncKeyed($('#pendingBody'), p.entries, (e) => e.rank, (e) => {
+    const tr = h('tr');
+    tr.append(h('td', { class: 'big', text: e.rank }), h('td'), h('td'), h('td'), h('td', { class: 'num-col' }));
+    return tr;
+  }, (tr, e) => {
+    const pl = e.entry_id != null ? plist.get(e.entry_id) : null;
+    const [, tdImg, tdName, tdTeam, tdScore] = tr.children;
+    if (!pl) {
+      tdImg.textContent = ''; tdName.textContent = '（選手を特定できませんでした）'; tdTeam.textContent = '';
+    } else {
+      if (!tdName.firstChild || !(tdName.firstChild instanceof HTMLInputElement)) {
+        tdImg.replaceChildren(pImage(pl));
+        const ni = h('input', { type: 'text', size: 16 });
+        const ti = h('input', { type: 'text', size: 10, list: 'teamList', placeholder: 'チーム名' });
+        tdName.replaceChildren(ni); tdTeam.replaceChildren(ti);
+        bindField(ni, () => pl.name, renamePlayer(pl.id));
+        bindField(ti, () => pl.team, setTeam(pl.id));
+      }
+      syncField(tdName.firstChild, pl.name);
+      syncField(tdTeam.firstChild, pl.team);
+      tdTeam.querySelector('.badge')?.remove();
+      if (pl.team_auto) tdTeam.append(h('span', { class: 'badge', text: '自動' }));
+    }
+    tdScore.textContent = e.score;
+  });
+
+  const todo = p.todo || [];
+  const reason = $('#pendingReason');
+  reason.replaceChildren();
+  if (todo.length) {
+    reason.append('確定する前に直してください：', h('ul', {}, todo.map((t) => h('li', { text: t }))));
+  }
+  $('#approveBtn').disabled = !p.can_approve;
+}
+
+function playerCard(p) {
+  const card = h('div', { class: 'player' });
+  const name = h('input', { type: 'text' });
+  const team = h('input', { type: 'text', list: 'teamList', placeholder: 'チーム名' });
+  card.append(
+    h('div', { class: 'pimgwrap' }),
+    h('div', { class: 'fields' },
+      h('label', { text: '名前' }), name,
+      h('label', { text: 'チーム' }), team),
+    h('details', { class: 'more' },
+      h('summary', { text: '…その他' }),
+      h('div', { class: 'inner' },
+        h('span', { text: '同じ人として統合：' }),
+        h('select', { class: 'mergeSel' }),
+        h('button', { class: 'secondary small mergeBtn', text: '統合する' }),
+        h('button', { class: 'danger small delBtn', text: 'この選手を削除' }))));
+  bindField(name, () => p.name, renamePlayer(p.id));
+  bindField(team, () => p.team, setTeam(p.id));
+  card.querySelector('.mergeBtn').onclick = async () => {
+    const into = card.querySelector('.mergeSel').value;
+    if (!into) return;
+    const cur = playerById().get(p.id);
+    const ok = await confirmDialog({
+      title: '同じ人として統合しますか？',
+      body: `「${cur ? cur.name : ''}」の結果を、選んだ選手にまとめます。元には戻せません。`, okText: '統合する' });
+    if (ok) await api('POST', `/api/roster/${p.id}/merge`, { into: Number(into) });
+  };
+  card.querySelector('.delBtn').onclick = async () => {
+    const cur = playerById().get(p.id);
+    const ok = await confirmDialog({
+      title: 'この選手を削除しますか？',
+      body: `「${cur ? cur.name : ''}」を削除します。過去のレースの点はこの選手の分だけ順位表から外れます。`, okText: '削除する' });
+    if (ok) await api('DELETE', `/api/roster/${p.id}`);
+  };
+  return card;
+}
+
+function updatePlayerCard(card, p, all) {
+  const [name, team] = card.querySelectorAll('.fields input');
+  syncField(name, p.name);
+  syncField(team, p.team);
+  card.querySelector('.badge')?.remove();
+  if (p.team_auto) card.querySelectorAll('.fields label')[1].append(h('span', { class: 'badge', text: '自動' }));
+  const wrap = card.querySelector('.pimgwrap');
+  const src = p.has_image ? `/api/roster/${p.id}/image` : '';
+  if (wrap.dataset.src !== src) { wrap.dataset.src = src; wrap.replaceChildren(pImage(p)); }
+  const sel = card.querySelector('.mergeSel');
+  if (document.activeElement !== sel) {
+    const current = sel.value;
+    sel.replaceChildren(h('option', { value: '', text: '選んでください' }),
+      ...all.filter((o) => o.id !== p.id).map((o) => h('option', { value: o.id, text: o.name })));
+    sel.value = current;
+  }
+}
+
+function renderPlayers(s) {
+  const all = s.roster || [];
+  const inMatch = all.filter((p) => p.in_match).sort((a, b) => (a.team || '~').localeCompare(b.team || '~') || a.id - b.id);
+  const old = all.filter((p) => !p.in_match);
+  $('#playersEmpty').hidden = inMatch.length > 0;
+  syncKeyed($('#players'), inMatch, (p) => p.id, playerCard, (c, p) => updatePlayerCard(c, p, all));
+  $('#oldPlayersWrap').hidden = old.length === 0;
+  $('#oldPlayersSummary').textContent = `過去の試合の選手（${old.length}人）`;
+  syncKeyed($('#oldPlayers'), old, (p) => p.id, playerCard, (c, p) => updatePlayerCard(c, p, all));
+  $('#teamList').replaceChildren(...(s.team_names || []).map((t) => h('option', { value: t })));
+}
+
+// ---------- 順位表 ----------
+function renderStandings(s) {
+  const teams = s.standings || [];
+  const m = s.match;
+  $('#standingsTable').hidden = teams.length === 0;
+  $('#standingsLead').textContent = teams.length ? '' : 'まだレースの結果がありません。';
+  const races = m ? Array.from({ length: m.current_race }, (_, i) => i + 1) : [];
+  const head = $('#standingsHead');
+  head.replaceChildren(h('th', { text: '順位' }), h('th', { text: 'チーム' }),
+    h('th', { class: 'num-col', text: '合計' }), h('th', { class: 'num-col', text: '首位との差' }),
+    ...races.map((r) => h('th', { class: 'num-col', text: `R${r}` })));
+  $('#standingsBody').replaceChildren(...teams.map((t) => h('tr', {},
+    h('td', { class: 'big', text: t.rank }),
+    h('td', {}, h('span', { class: 'dot', style: `background:${t.color}` }), h('b', { text: t.tag }),
+      h('div', { class: 'members', text: (t.members || []).join('・') })),
+    h('td', { class: 'num-col big', text: t.total }),
+    h('td', { class: 'num-col', text: t.diff_from_top === 0 ? '—' : t.diff_from_top }),
+    ...races.map((r) => h('td', { class: 'race', text: t.per_race[r] ?? '' })))));
+  $('#undoBtn').disabled = !s.can_undo;
+}
+
+// ---------- 映像・形式・開始 ----------
+function renderCameras() {
+  const running = state && state.live && state.live.running;
+  const box = $('#cams');
+  box.classList.toggle('locked', !!running);
+  $('#camRefresh').disabled = !!running;
+  if (running) {
+    $('#camNote').textContent = '集計中のため変更できません。';
+  } else if (cameras === null) {
+    $('#camNote').textContent = '';
+  } else if (!cameras.length) {
+    $('#camNote').textContent = '映像が見つかりませんでした。OBS の「仮想カメラ開始」を押してから、もう一度「映像を探す」を押してください。';
+  } else if (selectedCam === '') {
+    $('#camNote').textContent = 'ゲーム画面が映っているものをクリックして選んでください。';
+  } else {
+    $('#camNote').textContent = '';
+  }
+  if (cameras === null || running) {
+    if (running) { box.querySelectorAll('.cam').forEach((c) => c.classList.toggle('selected', c.dataset.index === selectedCam)); }
+    return;
+  }
+  box.replaceChildren(...cameras.map((c) => {
+    const card = h('div', { class: 'cam' + (String(c.index) === selectedCam ? ' selected' : ''), 'data-index': c.index,
+      onclick: () => { selectedCam = String(c.index); LS.set('cam', selectedCam); renderCameras(); } },
+      h('img', { src: `/api/cameras/${c.index}/preview?t=${Date.now()}`, alt: `映像 ${c.index}` }),
+      h('div', { class: 'cap' }, h('span', { text: `映像 ${c.index + 1}` }),
+        h('span', { text: String(c.index) === selectedCam ? '選択中' : `${c.width}×${c.height}` })));
+    return card;
+  }));
+}
+
+async function findCameras() {
+  $('#camNote').textContent = '映像を探しています…（数秒かかります）';
+  $('#camRefresh').disabled = true;
+  try {
     const res = await fetch('/api/cameras');
     const data = await res.json();
-    if (data.error) { note.textContent = data.error; return; }
-    if (!data.cameras.length) { note.textContent = '利用可能なカメラが見つかりませんでした'; return; }
-    note.textContent = `${data.cameras.length}件のソースが見つかりました。プレビューをクリックすると選択されます`;
-    for (const cam of data.cameras) {
-      const card = document.createElement('div');
-      card.style.cssText = 'border:2px solid #444; border-radius:8px; padding:6px; cursor:pointer; width:256px';
-      const img = document.createElement('img');
-      img.src = `/api/cameras/${cam.index}/preview?t=${Date.now()}`;
-      img.style.cssText = 'width:100%; display:block; background:#000';
-      img.alt = `カメラ ${cam.index}`;
-      const label = document.createElement('div');
-      label.textContent = `デバイス ${cam.index}（${cam.width}×${cam.height}）`;
-      card.appendChild(img);
-      card.appendChild(label);
-      card.onclick = () => {
-        document.getElementById('liveDevice').value = cam.index;
-        for (const c of grid.children) c.style.borderColor = '#444';
-        card.style.borderColor = '#4caf50';
-        note.textContent = `デバイス ${cam.index} を選択しました`;
-      };
-      grid.appendChild(card);
-    }
-  };
-  document.getElementById('liveStart').onclick = async () => {
-    await fetch('/api/live/start', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ device_index: parseInt(document.getElementById('liveDevice').value, 10) || 0 }) });
-  };
-  document.getElementById('liveStop').onclick = async () => {
-    await fetch('/api/live/stop', { method: 'POST' });
-  };
-  document.getElementById('approve').onclick = async () => {
-    await fetch('/api/review/approve', { method: 'POST' });
-  };
-  document.getElementById('discard').onclick = async () => {
-    await fetch('/api/review/discard', { method: 'POST' });
-  };
-  document.getElementById('reset').onclick = async () => {
-    await fetch('/api/session', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ format: document.getElementById('format').value, total_races: 12 }) });
-  };
-  const rosterBody = document.getElementById('rosterBody');
-  function renderRoster(entries) {
-    rosterBody.innerHTML = '';
-    for (const e of entries || []) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${e.id}</td><td>${e.name}</td><td>${e.confirmed ? '本登録' : '仮登録'}</td>` +
-        `<td>${e.races_seen}</td><td>${e.has_flag ? 'あり' : 'なし'}</td>`;
-      const td = document.createElement('td');
-      const renameBtn = document.createElement('button');
-      renameBtn.textContent = '名前を変更';
-      renameBtn.onclick = async () => {
-        const name = prompt('正しい名前を入力してください', e.name);
-        if (!name || !name.trim()) return;
-        const res = await fetch(`/api/roster/${e.id}/rename`, { method: 'POST',
-          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: name.trim() }) });
-        renderRoster((await res.json()).entries);
-      };
-      const btn = document.createElement('button');
-      btn.textContent = '削除';
-      btn.onclick = async () => {
-        const res = await fetch(`/api/roster/${e.id}`, { method: 'DELETE' });
-        renderRoster((await res.json()).entries);
-      };
-      td.appendChild(renameBtn);
-      td.appendChild(btn);
-      tr.appendChild(td);
-      rosterBody.appendChild(tr);
-    }
+    if (res.status === 409) { renderCameras(); return; }   // 集計中は一覧を更新できない（エラーではない）
+    if (!res.ok) { toast(data.error || '映像を探せませんでした', 'error'); return; }
+    cameras = data.cameras;
+    if (selectedCam !== '' && !cameras.some((c) => String(c.index) === selectedCam)) selectedCam = '';
+  } catch {
+    toast('アプリに接続できませんでした。', 'error');
+  } finally {
+    $('#camRefresh').disabled = false;
+    renderCameras();
   }
-  async function loadRoster() {
-    const res = await fetch('/api/roster');
-    renderRoster((await res.json()).entries);
+}
+
+function currentFormat() { return state && state.match ? state.match.format : (LS.get('fmt', '2v2')); }
+
+function renderFormats() {
+  const running = state && state.live && state.live.running;
+  const box = $('#formats');
+  box.classList.toggle('locked', !!running);
+  box.querySelectorAll('.fmt').forEach((f) => f.classList.toggle('selected', f.dataset.fmt === currentFormat()));
+}
+
+async function chooseFormat(fmt) {
+  if (state.live && state.live.running) return;
+  if (fmt === currentFormat()) return;
+  const done = state.match ? state.match.current_race : 0;
+  if (done > 0) {
+    const ok = await confirmDialog({
+      title: '形式を変えると新しい試合になります',
+      body: 'これまでの順位表は消えます（選手の登録は残ります）。よろしいですか？', okText: '新しい試合にする' });
+    if (!ok) return;
   }
-  loadRoster();
-  document.getElementById('rosterAdd').onclick = async () => {
-    const input = document.getElementById('rosterName');
-    const name = input.value.trim();
-    if (!name) return;
-    const res = await fetch('/api/roster', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ name }) });
-    renderRoster((await res.json()).entries);
-    input.value = '';
-  };
-  document.getElementById('simulateRace').onclick = async () => {
-    const names = document.getElementById('raceNames').value.split(',').map(s => s.trim());
-    const res = await fetch('/api/simulate_race', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ names }) });
-    const data = await res.json();
-    document.getElementById('raceResult').textContent =
-      data.status === 'confirmed' ? '確定しました' : '要確認: ' + (data.problems || []).join(' / ');
-  };
-  document.getElementById('simulate').onclick = async () => {
-    const names = document.getElementById('simNames').value.split(',').map(s => s.trim());
-    const scores = document.getElementById('simScores').value.split(',').map(s => parseInt(s.trim(), 10));
-    const res = await fetch('/api/simulate_result', { method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ names, scores }) });
-    const data = await res.json();
-    if (!data.ok) alertsEl.textContent = '検証NG: ' + JSON.stringify(data, null, 2);
-  };
+  LS.set('fmt', fmt);
+  await api('POST', '/api/session', { format: fmt });
+}
+
+function renderStart() {
+  const live = state.live || {};
+  $('#startBtn').hidden = !!live.running;
+  $('#stopBtn').hidden = !live.running;
+  $('#startNote').textContent = live.running ? '' : (selectedCam === '' ? '先に「1. ゲームの映像」を選んでください。' : '');
+}
+
+async function startLive() {
+  if (selectedCam === '') {
+    toast('先に「1. ゲームの映像」で映像を選んでください', 'error');
+    if (cameras === null) findCameras();
+    $('#cams').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  if (!state.match) await api('POST', '/api/session', { format: currentFormat() });
+  await api('POST', '/api/live/start', { device_index: Number(selectedCam) });
+}
+
+async function newMatch() {
+  if (state.live && state.live.running) { toast('先に「集計をとめる」を押してください', 'error'); return; }
+  const r = await confirmDialog({
+    title: '新しい試合をはじめますか？',
+    body: 'これまでの順位表は消えます。選手の登録（名前・チーム）は残ります。',
+    okText: '新しい試合をはじめる', option: '選手の登録も消す（メンバーが全員変わるとき）' });
+  if (r) await api('POST', '/api/session', { format: currentFormat(), reset_roster: r.checked });
+}
+
+// ---------- OBS 設定 ----------
+function updateOverlayUrl() {
+  const pos = $('#optPos').value, size = $('#optSize').value;
+  LS.set('opt.pos', pos); LS.set('opt.size', size);
+  const url = `${location.origin}/overlay?pos=${pos}&size=${size}`;
+  $('#overlayUrl').value = url;
+  const frame = $('#previewFrame');
+  if (frame.dataset.src !== url) { frame.dataset.src = url; frame.src = url; }
+}
+function fitPreview() {
+  const box = $('#previewBox');
+  $('#previewFrame').style.transform = `scale(${box.clientWidth / 1920})`;
+}
+
+// ---------- 全体の描画と接続 ----------
+function render(s) {
+  state = s;
+  document.body.classList.toggle('running', !!(s.live && s.live.running));
+  renderHero(s);
+  renderPending(s);
+  renderStandings(s);
+  renderPlayers(s);
+  renderFormats();
+  renderCameras();
+  renderStart();
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { $('#conn').textContent = '接続中'; $('#disconnected').style.display = 'none'; };
+  ws.onmessage = (ev) => { const msg = JSON.parse(ev.data); if (msg.type === 'STATE_UPDATE') render(msg); };
+  ws.onclose = () => { $('#conn').textContent = '切断'; $('#disconnected').style.display = 'block'; setTimeout(connect, 2000); };
+}
+
+$('#camRefresh').onclick = findCameras;
+document.querySelectorAll('.fmt').forEach((f) => { f.onclick = () => chooseFormat(f.dataset.fmt); });
+$('#startBtn').onclick = startLive;
+$('#stopBtn').onclick = () => api('POST', '/api/live/stop');
+$('#approveBtn').onclick = async () => { if (await api('POST', '/api/review/approve')) toast('確定しました'); };
+$('#discardBtn').onclick = async () => {
+  const ok = await confirmDialog({ title: 'この結果を使いませんか？', body: '次にリザルトが表示されたときに読み取り直します。', okText: '使わない' });
+  if (ok) await api('POST', '/api/review/discard');
+};
+$('#undoBtn').onclick = async () => {
+  const ok = await confirmDialog({ title: '直前のレースを取り消しますか？', body: '最後に集計したレースの点を順位表から外します。', okText: '取り消す' });
+  if (ok && await api('POST', '/api/race/undo')) toast('取り消しました');
+};
+$('#newMatchBtn').onclick = newMatch;
+$('#copyUrl').onclick = async () => {
+  const input = $('#overlayUrl');
+  try { await navigator.clipboard.writeText(input.value); } catch { input.select(); document.execCommand('copy'); }
+  toast('アドレスをコピーしました');
+};
+$('#optPos').value = LS.get('opt.pos', 'tr');
+$('#optSize').value = LS.get('opt.size', 'm');
+$('#optPos').onchange = $('#optSize').onchange = updateOverlayUrl;
+window.addEventListener('resize', fitPreview);
+updateOverlayUrl(); fitPreview();
+connect();
+findCameras();   // 開いたらすぐ映像を探す
 </script>
 </body>
 </html>

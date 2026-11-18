@@ -81,6 +81,12 @@ class MatchState:
         """完了レース数を手動で変更する（管理画面の SET_RACE）。"""
         self.current_race = max(0, min(completed, self.total_races))
 
+    def undo_last_race(self) -> None:
+        """直前のレースの取り消し: 完了数を1戻し、次のレース待ちにする。"""
+        self.current_race = max(0, self.current_race - 1)
+        self.phase = Phase.WAITING_RACE
+        self._cooldown_started_at = None
+
     def reset(self) -> None:
         self.current_race = 0
         self.phase = Phase.WAITING_RACE

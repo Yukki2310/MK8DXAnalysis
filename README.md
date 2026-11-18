@@ -38,9 +38,10 @@ src/mk8dx/
   scoring.py / tags.py / clustering.py   配点・タグ正規化・チーム判定（純ロジック）
   state.py / db.py         状態遷移とSQLite
   capture.py               OBS仮想カメラ入力
-  server.py                FastAPI + WebSocket
+  teams.py / standings.py  チーム分けの検証、順位表の計算（チームは今の選手名簿から引く）
+  server.py                FastAPI + WebSocket（管理画面は /admin、OBS用は /overlay）
 web/overlay.html           OBSブラウザソース用オーバーレイ（背景透過）
-web/admin.html             管理画面（モニター・選手名簿・承認・カメラ選択）
+web/admin.html             管理画面（案内つきの単一ページ。映像選択・開始・確認・選手とチーム・OBS設定）
 installer/                 PyInstaller spec / Inno Setup / ビルドスクリプト
 tools/                     extract_frames, build_rank_templates, identity_check, step8_check, run_video
 tests/                     単体テスト（画像・OCR不要）
@@ -48,22 +49,28 @@ tests/                     単体テスト（画像・OCR不要）
 
 ## 使い方（配布版）
 
-インストーラ（または zip）で導入し、`MK8DXAnalysis.exe` を起動する。
-管理画面が開く。OBS のブラウザソースには表示されたオーバーレイURL
-（既定 `http://localhost:8000/overlay`）を指定する。
+インストーラ（または zip）で導入し、`MK8DXAnalysis.exe` を起動する。管理画面がブラウザで開く
+（黒いウィンドウはアプリ本体なので、閉じると終了する）。画面の案内に沿って進めればよい。
 
-1. 管理画面で対戦形式を選んでセッション開始。
-2. OBS の仮想カメラを開始し、「カメラソース」でプレビューを見て仮想カメラを選ぶ。
-3. 「ライブ開始」。レースが自動で検知・集計される。
-4. 最初のレースで選手が自動登録される。**選手名簿で名前を正しい表記（チームタグが先頭に来る形）に
-   直す**とチーム判定が成立する。名前が読めなかった選手は「選手N」と表示されるので、同じく直す。
-5. 要確認のレースは管理画面で承認／破棄する。
+1. **ゲームの映像を選ぶ**: OBS の「仮想カメラ開始」を押してから「映像を探す」。ゲーム画面が映っているものを選ぶ。
+2. **対戦の形式を選ぶ**: 2人×6チーム / 3人×4チーム / 4人×3チーム。
+3. **「集計をはじめる」**: 以後、リザルト画面が出るたびに自動で読み取って点数を足す。
+4. **最初のレースで確認が出る**: 見つかった12人の名前（ゲーム画面の名前の画像つき）とチームを確認する。
+   名前が違えば直し、**同じチームの選手には同じチーム名**を入力して「この内容で確定する」。
+   チームはアプリが推測して「自動」と表示することもある。以後のレースは選手が同じなら自動で確定する。
+5. **OBS に表示**: 画面下の「OBS に順位表を表示する」のアドレスをブラウザソースに貼る（1920×1080）。
+   表示位置と大きさはその場で選べる。
+
+間違えたとき: 「直前のレースを取り消す」、選手のチーム名の付け替え（過去のレースの点も直る）、
+同じ人が別の選手として増えたときの「同じ人として統合」が画面から行える。
+アプリを閉じても、次に開くと直前の試合がそのまま続けられる。
 
 ## 開発
 
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pip install -e . --no-deps   # python -m mk8dx に必要（pytest だけなら不要）
 .venv\Scripts\python -m pytest tests
 .venv\Scripts\python -m mk8dx                      # サーバー起動
 .venv\Scripts\python tools\run_video.py --auto-approve clip1.mp4 clip2.mp4   # 動画で通し確認
