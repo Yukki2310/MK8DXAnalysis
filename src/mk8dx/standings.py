@@ -15,13 +15,13 @@ def compute(rows: list[dict], roster: Roster) -> list[dict]:
 
     戻り値の各要素: tag, color, total, per_race, last_race_points,
     members(選手名), rank(同点は同順位), diff_from_top。
-    チーム未設定の選手の点は集計に含めない。
+    チーム未設定の選手と、除外した選手の点は集計に含めない。
     """
     teams: dict[str, dict] = {}
     last_race = max((r["race_number"] for r in rows), default=0)
     for r in rows:
         entry = roster._entry_by_id(r["entry_id"]) if r.get("entry_id") else None
-        if entry is None or not entry.team:
+        if entry is None or not entry.team or entry.excluded:
             continue
         key = normalize_name(entry.team)
         team = teams.setdefault(key, {

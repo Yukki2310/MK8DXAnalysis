@@ -65,7 +65,7 @@ def selfcheck() -> int:
     if not (models_dir() / "ch_PP-OCRv5_rec_mobile.onnx").exists():
         problems.append("文字認識モデル(assets/models)がありません")
     if reader.engine_name == "PP-OCRv5" and (
-            models_dir() / "Qwen3-VL-4B-Instruct").exists():
+            models_dir() / "Qwen3-VL-2B-Instruct").exists():
         print("注意: 視覚言語モデルを同梱していますが、この環境では使えません"
               "（NVIDIA GPU が無い、または空きメモリ不足）。軽量版で動作します。")
     for p in problems:

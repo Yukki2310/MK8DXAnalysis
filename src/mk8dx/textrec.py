@@ -13,9 +13,10 @@
 | EasyOCR | 41/220 | 40/220 | |
 
 視覚言語モデル（VLM）は ◇ ★ ♭ などの記号や、背景のにじんだ文字も読める。
-GPU（NVIDIA、空きメモリ約10GB以上）があれば Qwen3-VL-4B、足りなければ 2B、
-GPU が無ければ PP-OCRv5 の認識モデルで読む。どれも使えないときは仮名
-（選手N）になり、画面で名前を付ける。
+配布版は、インストール容量を減らすため Qwen3-VL-2B だけを同梱する（4B は厳密一致が
+わずかに高いが、容量が約4GB増える）。GPU（NVIDIA、空きメモリ約5.5GB以上）があれば
+2B、無ければ PP-OCRv5 の認識モデルで読む。どれも使えないときは仮名（選手N）になり、
+画面で名前を付ける。
 
 モデルは assets/models/ に同梱する（tools/fetch_models.py で取得）。無い場合は
 開発時のみ Hugging Face / RapidOCR の自動ダウンロードに任せる。
@@ -46,7 +47,6 @@ TEAM_RULES = (
 )
 # (モデルのフォルダ名, Hugging Face のID, 必要な空きGPUメモリ[GB])
 VLM_TIERS = [
-    ("Qwen3-VL-4B-Instruct", "Qwen/Qwen3-VL-4B-Instruct", 10.5),
     ("Qwen3-VL-2B-Instruct", "Qwen/Qwen3-VL-2B-Instruct", 5.5),
 ]
 VLM_BATCH = 12

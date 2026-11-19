@@ -41,6 +41,38 @@ def test_group_by_labels_valid_and_invalid():
     assert any("未設定" in w for w in missing.warnings)
 
 
+def test_group_by_labels_6v6():
+    ok = group_by_labels(["A"] * 6 + ["B"] * 6, "6v6")
+    assert ok.valid and len(ok.teams) == 2
+    assert not group_by_labels(["A"] * 5 + ["B"] * 7, "6v6").valid
+
+
+def test_group_by_labels_with_excluded_players():
+    labels = ["A"] * 5 + [None] + ["B"] * 6      # 6人目（除外）はチーム未設定でもよい
+    excluded = [False] * 5 + [True] + [False] * 6
+    ok = group_by_labels(labels, "6v6", excluded)
+    assert ok.valid and len(ok.teams) == 2
+    # 除外が無ければ、人数不足・未設定として警告になる
+    assert not group_by_labels(labels, "6v6").valid
+    # 除外していても、チームの人数が多すぎればエラー
+    too_many = group_by_labels(["A"] * 7 + ["B"] * 4 + [None], "6v6",
+                               [False] * 11 + [True])
+    assert not too_many.valid
+
+
+def test_excluded_player_is_left_out_of_standings_and_survives_roundtrip():
+    roster = _roster_with_teams(TEAMS_2V2)
+    rows = _rows([list(range(1, 13))])
+    assert roster.set_excluded(1, True) and not roster.set_excluded(999, True)
+    table = {t["tag"]: t for t in standings.compute(rows, roster)}
+    assert table["A"]["total"] == 12 and table["A"]["members"] == ["選手2"]
+    assert sum(t["total"] for t in table.values()) == 82 - 15
+    restored = Roster.from_dict(roster.to_dict())
+    assert restored.entries[0].excluded and not restored.entries[1].excluded
+    roster.set_excluded(1, False)     # 戻せば過去の点も戻る
+    assert sum(t["total"] for t in standings.compute(rows, roster)) == 82
+
+
 def test_group_by_labels_ignores_case_and_kana():
     labels = ["ab", "AB", "かな", "カナ"] + ["x", "x", "y", "y", "z", "z", "w", "w"]
     result = group_by_labels(labels, "2v2")

@@ -1,7 +1,7 @@
 ; Inno Setup スクリプト。installer/build.ps1 が PyInstaller の出力(dist\MK8DXAnalysis)を作った後に
 ; ISCC.exe installer\mk8dx.iss でコンパイルする。出力: dist\installer\MK8DXAnalysis-Setup.exe
 #define AppName "MK8DX 自動集計"
-#define AppVersion "0.2.1"
+#define AppVersion "0.2.2"
 #define Models "_internal\assets\models"
 
 [Setup]
@@ -34,8 +34,7 @@ Name: "standard"; Description: "標準"
 Name: "custom"; Description: "カスタム"; Flags: iscustom
 
 [Components]
-Name: "main"; Description: "本体（高精度な文字認識 Qwen3-VL-4B を含む）"; Types: standard custom; Flags: fixed
-Name: "small"; Description: "小型の文字認識モデル（GPUメモリが少ないとき用・約4GB）"; Types: custom
+Name: "main"; Description: "本体（文字認識 Qwen3-VL-2B を含む）"; Types: standard custom; Flags: fixed
 
 [Files]
 ; 本体（モデルを除く）
@@ -44,8 +43,7 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion; Components: main
 ; 文字認識モデル（無圧縮）
 Source: "..\dist\MK8DXAnalysis\{#Models}\ch_PP-OCRv5_rec_mobile.onnx"; DestDir: "{app}\{#Models}"; Flags: ignoreversion nocompression; Components: main
-Source: "..\dist\MK8DXAnalysis\{#Models}\Qwen3-VL-4B-Instruct\*"; DestDir: "{app}\{#Models}\Qwen3-VL-4B-Instruct"; Flags: recursesubdirs ignoreversion nocompression; Components: main
-Source: "..\dist\MK8DXAnalysis\{#Models}\Qwen3-VL-2B-Instruct\*"; DestDir: "{app}\{#Models}\Qwen3-VL-2B-Instruct"; Flags: recursesubdirs ignoreversion nocompression; Components: small
+Source: "..\dist\MK8DXAnalysis\{#Models}\Qwen3-VL-2B-Instruct\*"; DestDir: "{app}\{#Models}\Qwen3-VL-2B-Instruct"; Flags: recursesubdirs ignoreversion nocompression; Components: main
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\MK8DXAnalysis.exe"

@@ -4,7 +4,7 @@
 #
 # 1. 配布専用の venv（.venv-build）に実行時依存＋PyInstaller だけを入れる
 #    （開発用 venv の paddle 等を巻き込まないため）
-# 2. 文字認識モデルを assets\models に用意する（初回のみネットワーク、視覚言語モデルは約13GB）
+# 2. 文字認識モデルを assets\models に用意する（初回のみネットワーク、視覚言語モデルは約4GB）
 # 3. PyInstaller(onedir) で dist\MK8DXAnalysis を作る
 # 4. Inno Setup(ISCC.exe) があればインストーラ、無ければ zip を作る
 param([switch]$LightOnly)
@@ -28,6 +28,16 @@ $fetch = Join-Path $root "tools\fetch_models.py"
 if ($LightOnly) { & $py $fetch --no-vlm } else { & $py $fetch }
 
 & $py -m PyInstaller installer\mk8dx.spec --noconfirm --distpath dist --workpath build
+
+# 使わない大きなファイルを削る（名前の読み取りは行列演算と畳み込みだけを使う）:
+#  - cuDNN の RNN 用ライブラリ、cuSOLVER の複数GPU用ライブラリ、開発用のヘッダ
+#  （torch の .py は削らない: 実行時にソースを読む箇所があり、消すとモデルを読み込めない）
+$internal = "dist\MK8DXAnalysis\_internal"
+foreach ($pattern in @("torch\lib\cudnn_adv64_*.dll", "torch\lib\cusolverMg64_*.dll",
+        "torch\lib\*.lib", "torch\include")) {
+    Get-ChildItem (Join-Path $internal $pattern) -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force
+}
 
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) {

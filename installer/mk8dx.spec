@@ -21,7 +21,12 @@ import os
 if os.environ.get("MK8DX_SPEC_NO_MODELS"):
     asset_datas = [(ROOT + "/assets/rank_templates.npz", "assets")]
 else:
-    asset_datas = [(ROOT + "/assets", "assets")]
+    # 配布するモデルだけを入れる（assets/models に他のモデルがあっても同梱しない）
+    asset_datas = [
+        (ROOT + "/assets/rank_templates.npz", "assets"),
+        (ROOT + "/assets/models/ch_PP-OCRv5_rec_mobile.onnx", "assets/models"),
+        (ROOT + "/assets/models/Qwen3-VL-2B-Instruct", "assets/models/Qwen3-VL-2B-Instruct"),
+    ]
 # 視覚言語モデル（Qwen3-VL）を同梱するビルドのときだけ、torch / transformers を含める
 have_vlm = (importlib.util.find_spec("torch") is not None
             and importlib.util.find_spec("transformers") is not None)

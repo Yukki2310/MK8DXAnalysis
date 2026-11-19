@@ -332,6 +332,7 @@ class RosterEntry:
     thumb: bytes | None = None  # 名前行の実画像（JPEG）。管理画面で誰か見分ける用
     team: str | None = None    # チーム名（表示・集計用）。None は未設定
     team_manual: bool = False  # 人が設定したか（False は自動推定）
+    excluded: bool = False     # 集計から除く選手（不要な参加者）
     _prepared: list[np.ndarray] = field(default_factory=list, repr=False)
 
     def add_mask(self, mask: np.ndarray) -> bool:
@@ -370,6 +371,7 @@ class RosterEntry:
             "name_reads": self.name_reads,
             "team": self.team,
             "team_manual": self.team_manual,
+            "excluded": self.excluded,
             "thumb": base64.b64encode(self.thumb).decode("ascii") if self.thumb else None,
         }
 
@@ -391,6 +393,7 @@ class RosterEntry:
         entry.thumb = base64.b64decode(data["thumb"]) if data.get("thumb") else None
         entry.team = data.get("team")
         entry.team_manual = bool(data.get("team_manual", False))
+        entry.excluded = bool(data.get("excluded", False))
         entry.masks = [mask_from_dict(m) for m in data.get("masks", [])]
         entry._prepared = [prepare_mask(m) for m in entry.masks]
         return entry
@@ -501,6 +504,14 @@ class Roster:
             self.color_for(team)
         return True
 
+    def set_excluded(self, entry_id: int, excluded: bool) -> bool:
+        """選手を集計から除く／戻す。点は消さず、順位表の計算で除くだけ。"""
+        entry = self._entry_by_id(entry_id)
+        if entry is None:
+            return False
+        entry.excluded = bool(excluded)
+        return True
+
     def color_for(self, team: str) -> str:
         """チーム名の色を返す（初めてのチームには未使用の色を割り当てる）。"""
         key = normalize_name(team)
@@ -520,6 +531,7 @@ class Roster:
             return False
         if b.team is None and a.team is not None:
             b.team, b.team_manual = a.team, a.team_manual
+        b.excluded = b.excluded and a.excluded
         if a.pinned_name and not b.pinned_name:
             b.pinned_name = a.pinned_name
         self._absorb(b, a)

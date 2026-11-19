@@ -253,7 +253,8 @@ class RaceProcessor:
         ]
         if any(e is None for e in entries):
             return ["選手を特定できていない順位があります"]
-        return group_by_labels([e.team for e in entries], self.format).warnings
+        return group_by_labels([e.team for e in entries], self.format,
+                               [e.excluded for e in entries]).warnings
 
     @staticmethod
     def _reuse_label(members: list) -> str | None:
@@ -295,8 +296,10 @@ class RaceProcessor:
         ]
         if any(e is None for e in entries):
             return None
-        if all(e.team for e in entries):  # type: ignore[union-attr]
-            return group_by_labels([e.team for e in entries], self.format)  # type: ignore[union-attr]
+        excluded = [e.excluded for e in entries]  # type: ignore[union-attr]
+        if all(e.team or e.excluded for e in entries):  # type: ignore[union-attr]
+            return group_by_labels(
+                [e.team for e in entries], self.format, excluded)  # type: ignore[union-attr]
         names = [e.canonical_name for e in entries]  # type: ignore[union-attr]
         # まず名前の先頭（タグ）の画像照合、決められなければ文字認識の読みから推定する。
         # それでも決められなければ、視覚言語モデルに名前画像を見せて推定させる。
@@ -311,14 +314,14 @@ class RaceProcessor:
                 members = [entries[i] for i in team.members]
                 tag = self._reuse_label(members) or team.tag
                 for entry in members:
-                    if entry is not None and (
+                    if entry is not None and not entry.excluded and (
                             not entry.team or (not entry.team_manual and entry.team != tag)):
                         # 未設定の選手と、自動で付けたタグが揺れている選手を、同じ表記にそろえる
                         self.roster.set_team(entry.id, tag, manual=False)
             if had_labels:
                 # 設定済みの選手が混ざっている場合は、その組み合わせで成立するか検証する
                 return group_by_labels(
-                    [e.team for e in entries], self.format)  # type: ignore[union-attr]
+                    [e.team for e in entries], self.format, excluded)  # type: ignore[union-attr]
         return guess
 
     def _build_outcome(

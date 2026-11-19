@@ -10,29 +10,37 @@ from .clustering import FORMATS, PLAYERS_PER_RACE, Assignment, Team
 from .tags import normalize_name
 
 
-def group_by_labels(labels: list[str | None], fmt: str) -> Assignment:
-    """行ごとのチーム名（順位順12個）から割り当てを作り、人数を検証する。"""
+def group_by_labels(labels: list[str | None], fmt: str,
+                    excluded: list[bool] | None = None) -> Assignment:
+    """行ごとのチーム名（順位順12個）から割り当てを作り、人数を検証する。
+
+    excluded が True の行は集計から除く選手なので、チームの人数・数の検証から外す
+    （除いた分、人数が足りなくなるのは正しい）。
+    """
     team_size = FORMATS[fmt]
     n_teams = PLAYERS_PER_RACE // team_size
     warnings: list[str] = []
     groups: dict[str, list[int]] = {}
     display: dict[str, str] = {}
+    skipped = excluded or [False] * len(labels)
     for i, label in enumerate(labels):
-        if not label:
+        if skipped[i] or not label:
             continue
         key = normalize_name(label)
         groups.setdefault(key, []).append(i)
         display.setdefault(key, label)
-    missing = sum(1 for label in labels if not label)
+    missing = sum(1 for label, skip in zip(labels, skipped) if not label and not skip)
     if missing:
         warnings.append(f"チームが未設定の選手が{missing}名います")
+    any_excluded = any(skipped)
     for key, members in groups.items():
-        if len(members) != team_size:
+        too_many = len(members) > team_size
+        if too_many or (len(members) != team_size and not any_excluded):
             warnings.append(
                 f"チーム「{display[key]}」が{len(members)}名です"
                 f"（{team_size}名ずつにしてください）"
             )
-    if len(groups) != n_teams:
+    if len(groups) > n_teams or (len(groups) != n_teams and not any_excluded):
         warnings.append(f"チーム数が{len(groups)}です（{n_teams}チームにしてください）")
     valid = not warnings
     teams = [

@@ -90,6 +90,9 @@
   .players { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
   .player { border: 1px solid var(--line); border-radius: 11px; padding: 9px; background: #fafbfe; }
   .player .pimg { width: 100%; height: 30px; margin-bottom: 7px; }
+  .player.ex { background: #eceef3; }
+  .player.ex .pimg, .player.ex .f { opacity: .45; }
+  .player .exl { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 13px; font-weight: 700; cursor: pointer; }
   .player .f { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .player details { margin-top: 6px; font-size: 13px; } .player summary { cursor: pointer; color: var(--sub); }
   .player .inner { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
@@ -128,7 +131,7 @@
   <span class="spacer"></span>
   <button class="ghost" id="camBtn">映像ソース選択</button>
   <span class="seg" id="fmtSeg" title="1チームの人数">
-    <button data-fmt="2v2">2v2</button><button data-fmt="3v3">3v3</button><button data-fmt="4v4">4v4</button>
+    <button data-fmt="2v2">2v2</button><button data-fmt="3v3">3v3</button><button data-fmt="4v4">4v4</button><button data-fmt="6v6">6v6</button>
   </span>
   <button class="ghost" id="undoBtn" title="直前のレースを取り消す">↶ 取り消し</button>
   <button class="ghost" id="newMatchBtn" title="新しい試合を始める">＋ 新しい試合</button>
@@ -385,7 +388,10 @@ function renderResult(s) {
 function playerCard(p) {
   const card = h('div', { class: 'player' });
   const name = h('input', { type: 'text' }), team = h('input', { type: 'text', list: 'teamList', placeholder: 'チーム' });
+  const ex = h('input', { type: 'checkbox', class: 'exBox' });
+  ex.onchange = () => api('POST', `/api/roster/${card.dataset.key}/exclude`, { excluded: ex.checked });
   card.append(h('div', { class: 'imgwrap' }), h('div', { class: 'f' }, name, team),
+    h('label', { class: 'exl' }, ex, '集計から除く'),
     h('details', {}, h('summary', { text: '…' }),
       h('div', { class: 'inner' },
         h('select', { class: 'mergeSel' }), h('button', { class: 'ghost sm mergeBtn', text: '同じ人として統合' }),
@@ -406,6 +412,8 @@ function updateCard(card, p, all) {
   const [name, team] = card.querySelectorAll('.f input');
   syncField(name, p.name); syncField(team, p.team);
   team.title = p.team_auto ? '自動で付けたチーム' : '';
+  card.classList.toggle('ex', !!p.excluded);
+  card.querySelector('.exBox').checked = !!p.excluded;
   const wrap = card.querySelector('.imgwrap');
   const src = p.has_image ? `/api/roster/${p.id}/image?v=${p.image_v}` : '';
   if (wrap.dataset.src !== src) { wrap.dataset.src = src; wrap.replaceChildren(src ? h('img', { class: 'pimg', src, alt: '' }) : ''); }

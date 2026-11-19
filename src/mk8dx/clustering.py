@@ -1,6 +1,6 @@
 """チームクラスタリング（設計書 4.2）。
 
-対戦形式の人数制約（2v2=各2名/6チーム、3v3=各3名/4チーム、4v4=各4名/3チーム）を
+対戦形式の人数制約（2v2=各2名/6チーム、3v3=各3名/4チーム、4v4=各4名/3チーム、6v6=各6名/2チーム）を
 使って、12名のプレイヤー名から最も確からしいチーム分けを推定する。
 
 方針:
@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from .tags import common_prefix, has_forbidden_diacritic, normalize_name
 
-FORMATS: dict[str, int] = {"2v2": 2, "3v3": 3, "4v4": 4}
+FORMATS: dict[str, int] = {"2v2": 2, "3v3": 3, "4v4": 4, "6v6": 6}
 PLAYERS_PER_RACE = 12
 
 

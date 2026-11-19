@@ -7,7 +7,7 @@ MK8DX 自動集計（MIT License、`LICENSE` 参照）の配布物には、次�
 
 | 名前 | 用途 | ライセンス | 配布元 |
 |---|---|---|---|
-| Qwen3-VL-4B-Instruct / Qwen3-VL-2B-Instruct | 名前の文字認識・チーム推定 | Apache License 2.0 | https://huggingface.co/Qwen |
+| Qwen3-VL-2B-Instruct | 名前の文字認識・チーム推定 | Apache License 2.0 | https://huggingface.co/Qwen |
 | PP-OCRv5 認識モデル（ONNX 変換版） | 名前の文字認識（GPU なしの代替） | Apache License 2.0 | https://github.com/PaddlePaddle/PaddleOCR / https://github.com/RapidAI/RapidOCR |
 
 ## ライブラリ

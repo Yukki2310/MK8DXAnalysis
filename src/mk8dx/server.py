@@ -106,6 +106,7 @@ def _roster_payload(in_match: set[int]) -> list[dict]:
             "name": e.canonical_name,
             "team": e.team,
             "team_auto": bool(e.team) and not e.team_manual,
+            "excluded": e.excluded,
             "races_seen": e.races_seen,
             "has_image": bool(e.thumb or e.masks),
             "image_v": len(e.thumb) if e.thumb else 0,
@@ -155,7 +156,7 @@ def _build_state() -> dict:
         }
     team_names: list[str] = []
     for e in _roster.entries:
-        if e.team and e.team not in team_names:
+        if e.team and not e.excluded and e.team not in team_names:
             team_names.append(e.team)
     return {
         "type": "STATE_UPDATE",
@@ -295,6 +296,17 @@ async def set_player_team(entry_id: int, body: dict):
     with _lock:
         if not _roster.set_team(entry_id, body.get("team")):
             return _error("チームを設定できませんでした")
+        _persist_roster()
+    await broadcast_state()
+    return _ok()
+
+
+@app.post("/api/roster/{entry_id}/exclude")
+async def exclude_player(entry_id: int, body: dict):
+    """この選手を集計から除く（excluded=false で戻す）。過去のレースの点も順位表から除かれる。"""
+    with _lock:
+        if not _roster.set_excluded(entry_id, bool(body.get("excluded", True))):
+            return _error("設定できませんでした")
         _persist_roster()
     await broadcast_state()
     return _ok()
