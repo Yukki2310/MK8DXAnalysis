@@ -59,6 +59,61 @@ def test_open_gives_up_when_the_device_does_not_answer(monkeypatch):
     assert time.monotonic() - started < 3
 
 
+def test_device_is_opened_used_and_closed_in_one_thread(monkeypatch):
+    """DirectShow のデバイスは、開いたスレッドとは別のスレッドで触るとアプリが落ちる。"""
+    import numpy as np
+
+    threads: dict[str, set] = {}
+
+    def note(what):
+        threads.setdefault(what, set()).add(threading.get_ident())
+
+    class Fake:
+        def __init__(self, *a):
+            note("open")
+
+        def isOpened(self):
+            return True
+
+        def set(self, *a):
+            note("set")
+
+        def read(self):
+            note("read")
+            time.sleep(0.01)
+            return True, np.zeros((2, 2, 3), np.uint8)
+
+        def release(self):
+            note("release")
+
+    monkeypatch.setattr(capture.cv2, "VideoCapture", Fake)
+    cam = capture.VirtualCamera(0)
+    cam.open(timeout=2)
+    stop = threading.Event()
+    assert next(cam.frames_at_interval(0.02, stop=stop)) is not None
+    cam.release()
+    time.sleep(0.2)
+    assert set(threads) == {"open", "set", "read", "release"}
+    used = set().union(*threads.values())
+    assert len(used) == 1 and threading.get_ident() not in used
+
+
+def test_failed_open_reports_error(monkeypatch):
+    class Closed:
+        def __init__(self, *a):
+            pass
+
+        def isOpened(self):
+            return False
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(capture.cv2, "VideoCapture", Closed)
+    with pytest.raises(RuntimeError, match="開けませんでした"):
+        capture.VirtualCamera(0).open(timeout=2)
+
+
 def test_frames_stop_and_raise_when_the_stream_stalls(monkeypatch):
     monkeypatch.setattr(capture, "STALL_TIMEOUT", 0.2)
     cam = capture.VirtualCamera(0)

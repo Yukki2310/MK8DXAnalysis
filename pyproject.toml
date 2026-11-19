@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mk8dx-analysis"
-version = "0.2.2"
+version = "0.2.3"
 description = "マリオカート8DX リザルトOCR自動集計・OBSオーバーレイシステム"
 requires-python = ">=3.10"
 dependencies = [

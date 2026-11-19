@@ -157,7 +157,8 @@ class VirtualCamera:
         self.device_index = device_index
         self.width = width
         self.height = height
-        self._cap: cv2.VideoCapture | None = None
+        self._opened = threading.Event()
+        self._open_failed = False
         self._latest: np.ndarray | None = None
         self._latest_at = 0.0
         self._seq = 0
@@ -165,51 +166,57 @@ class VirtualCamera:
         self._stop = threading.Event()
 
     def open(self, timeout: float = OPEN_TIMEOUT) -> None:
-        """デバイスを開く。他のアプリが使用中で応答しないときは、待たずにエラーにする。"""
-        box: dict = {}
-        abandoned = threading.Event()
+        """デバイスを開く。他のアプリ（OBSなど）が使用中で応答しないときは、待たずにエラーにする。
 
-        def target() -> None:
-            cap = cv2.VideoCapture(self.device_index, _BACKEND)
-            if not cap.isOpened():
-                cap.release()
-                return
-            box["cap"] = cap
-            if abandoned.is_set():          # 待ちきれなかった後で開けた場合は、すぐ閉じる
-                cap.release()
-
-        thread = threading.Thread(target=target, daemon=True)
+        DirectShow のデバイスは、開いたスレッドの中で使い続け、閉じるのも同じスレッドで行う
+        必要がある（別のスレッドから触るとアクセス違反でアプリが落ちる）。そのため、
+        開く・設定する・読み続ける・閉じる をすべて専用スレッドの中で行い、
+        ここでは「開けたか」を時間を区切って待つだけにする。
+        """
+        self._opened = threading.Event()
+        thread = threading.Thread(target=self._device_loop, daemon=True)
         thread.start()
-        thread.join(timeout)
-        if "cap" not in box:
-            abandoned.set()
+        if not self._opened.wait(timeout) or self._open_failed:
+            self._stop.set()        # 待ちきれなかった後で開けた場合は、スレッド側がすぐ閉じる
             raise RuntimeError(
                 f"カメラデバイス {self.device_index} を開けませんでした。"
                 "他のアプリ（OBSなど）が使用中の可能性があります。")
-        cap = box["cap"]
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        self._cap = cap
         self._latest_at = time.monotonic()
-        threading.Thread(target=self._grab_loop, daemon=True).start()
 
-    def _grab_loop(self) -> None:
-        cap = self._cap
-        while not self._stop.is_set() and cap is not None:
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                with self._lock:
-                    self._latest, self._latest_at = frame, time.monotonic()
-                    self._seq += 1
-            else:
-                time.sleep(0.05)
+    def _device_loop(self) -> None:
+        cap = None
+        try:
+            cap = cv2.VideoCapture(self.device_index, _BACKEND)
+            if not cap.isOpened():
+                self._open_failed = True
+                return
+            if self._stop.is_set():     # 待ちきれずに諦められた後だった
+                return
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            self._latest_at = time.monotonic()
+            self._opened.set()
+            while not self._stop.is_set():
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    with self._lock:
+                        self._latest, self._latest_at = frame, time.monotonic()
+                        self._seq += 1
+                else:
+                    time.sleep(0.05)
+        except Exception:
+            self._open_failed = True
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            self._opened.set()
 
     def release(self) -> None:
+        """止める。デバイスは専用スレッドが自分で閉じる（応答しなくても、ここは待たない）。"""
         self._stop.set()
-        cap, self._cap = self._cap, None
-        if cap is not None:
-            # 読み取りが止まっているデバイスの release が返らないことがあるので、別スレッドで行う
-            threading.Thread(target=cap.release, daemon=True).start()
 
     def frames_at_interval(self, interval_sec: float = 0.4,
                            stop: threading.Event | None = None) -> Iterator[np.ndarray]:
